@@ -27,6 +27,16 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(imgui)
 
+# --- nlohmann/json via FetchContent ---
+FetchContent_Declare(
+    json
+    GIT_REPOSITORY https://github.com/nlohmann/json.git
+    GIT_TAG        v3.11.3
+    GIT_SHALLOW    TRUE
+)
+set(JSON_BuildTests OFF CACHE BOOL "" FORCE)
+FetchContent_MakeAvailable(json)
+
 set(IMGUI_DIR ${imgui_SOURCE_DIR})
 set(IMGUI_SOURCES
     ${IMGUI_DIR}/imgui.cpp
@@ -44,6 +54,7 @@ add_executable(fractal-engine
     src/metal_backend.mm
     src/shader_manager.cpp
     src/gui.cpp
+    src/state_serializer.cpp
     ${IMGUI_SOURCES}
 )
 
@@ -55,6 +66,7 @@ target_include_directories(fractal-engine PRIVATE
 
 target_link_libraries(fractal-engine PRIVATE
     SDL3::SDL3-static
+    nlohmann_json::nlohmann_json
     "-framework Metal"
     "-framework MetalKit"
     "-framework QuartzCore"

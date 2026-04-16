@@ -6,6 +6,7 @@
 #include "shader_manager.h"
 #include "gui.h"
 #include "math_util.h"
+#include "state_serializer.h"
 #include <cstring>
 #include <vector>
 #include <iostream>
@@ -66,7 +67,12 @@ int main(int argc, char* argv[]) {
     // 7. Camera
     Camera camera;
 
-    // 8. Timing
+    // 8. State persistence — load saved state
+    std::string state_path = std::string(SDL_GetBasePath()) + "state.json";
+    StateSerializer state(state_path);
+    state.load(camera, shaders);
+
+    // 9. Timing
     uint64_t start_time = SDL_GetPerformanceCounter();
     uint64_t freq = SDL_GetPerformanceFrequency();
     uint32_t frame_index = 0;
@@ -219,6 +225,9 @@ int main(int argc, char* argv[]) {
         backend.render_imgui();
 
         backend.end_frame();
+
+        // Auto-save state if anything changed
+        state.save_if_changed(camera, shaders);
 
         frame_index++;
     }

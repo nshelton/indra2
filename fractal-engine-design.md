@@ -1038,6 +1038,45 @@ add_custom_command(TARGET fractal-engine POST_BUILD
 
 ---
 
+## State Persistence (state_serializer.h / state_serializer.cpp)
+
+### Overview
+
+All application state (camera pose, shader parameters) is persisted to a JSON file next to the executable (`state.json`). State is saved automatically whenever any value changes and loaded on startup.
+
+### What is Serialized
+
+```json
+{
+  "camera": {
+    "pos": [0, 0, -3],
+    "yaw": 0.0,
+    "pitch": 0.0,
+    "fov": 1.2,
+    "speed": 2.0,
+    "sensitivity": 0.003
+  },
+  "shaders": {
+    "raymarch.metal": {
+      "radius": [1.0, 0, 0, 0],
+      "surface_color": [0.9, 0.6, 0.3, 0]
+    }
+  }
+}
+```
+
+Shader params are keyed by name so they survive reordering in the shader source. Values are stored as 4-element arrays (the full float4 slot) regardless of component count.
+
+### Change Detection
+
+Each frame, compare current camera + param values against the last-saved snapshot. If anything differs, write the file. This is cheap (memcmp on small structs) and avoids unnecessary disk writes when idle.
+
+### Dependencies
+
+- **nlohmann/json** (header-only, via FetchContent)
+
+---
+
 ## Utility Functions Needed
 
 These are small enough to go in a `math_util.h` or inline in `types.h`:
@@ -1097,7 +1136,7 @@ At step 9 the scaffold is complete. Everything after this is the actual renderer
 
 - **All Metal API calls go in metal_backend.mm. Nowhere else.** The rest of the codebase is pure C++.
 - **Do not use any math library (GLM, Eigen, etc.).** The matrix math needed is ~4 functions. Write them inline.
-- **Do not use any JSON, YAML, or config file library.** The param parser is trivial string splitting.
+- **nlohmann/json is the JSON library (via FetchContent).** Used for state persistence (camera + shader params). The `@param` comment parser remains simple string splitting — no JSON there.
 - **Do not use any file watcher library.** `std::filesystem::last_write_time` polled at 2Hz is sufficient.
 - **The `FrameUniforms` struct must be byte-identical in C++ and Metal.** Use `alignas(16)` on the C++ side and verify with `static_assert(sizeof(FrameUniforms) == expected)`. Metal's `float4x4` is 64 bytes, column-major. The C++ side stores these as `float[16]` column-major.
 - **The shaders/ directory is symlinked into the build dir.** Edits to source shaders are instantly visible to the running app. No copy step needed.
