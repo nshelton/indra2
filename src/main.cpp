@@ -227,7 +227,7 @@ int main(int argc, char* argv[]) {
         backend.end_frame();
 
         // Auto-save state if anything changed
-        state.save_if_changed(camera, shaders);
+        state.save_if_changed(camera, shaders, time);
 
         frame_index++;
     }

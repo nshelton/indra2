@@ -110,7 +110,7 @@ static bool camera_eq(const Camera& a, const Camera& b) {
            a.sensitivity == b.sensitivity;
 }
 
-bool StateSerializer::needs_save(const Camera& camera, const ShaderManager& shaders) const {
+bool StateSerializer::state_differs(const Camera& camera, const ShaderManager& shaders) const {
     if (!camera_eq(camera, last_camera_)) return true;
 
     for (size_t si = 0; si < last_shader_params_.size(); si++) {
@@ -137,8 +137,15 @@ void StateSerializer::snapshot(const Camera& camera, const ShaderManager& shader
     }
 }
 
-void StateSerializer::save_if_changed(const Camera& camera, const ShaderManager& shaders) {
-    if (!needs_save(camera, shaders)) return;
-    save(camera, shaders);
-    snapshot(camera, shaders);
+void StateSerializer::save_if_changed(const Camera& camera, const ShaderManager& shaders, float time) {
+    if (state_differs(camera, shaders)) {
+        // State changed — reset the debounce timer
+        dirty_ = true;
+        dirty_time_ = time;
+        snapshot(camera, shaders);
+    } else if (dirty_ && (time - dirty_time_) >= debounce_seconds_) {
+        // No changes for 2 seconds — flush to disk
+        save(camera, shaders);
+        dirty_ = false;
+    }
 }
