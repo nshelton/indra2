@@ -81,7 +81,7 @@ void ShaderManager::reload_shader(ShaderEntry& entry) {
     if (new_pipeline >= 0) {
         entry.pipeline_id = new_pipeline;
         entry.error.clear();
-        std::cout << "[shader] Compiled " << entry.filename << " successfully\n";
+        std::cout << "[shader] Compiled " << entry.filename << " successfully (" << entry.params.size() << " params)\n";
     } else {
         entry.error = err;
         std::cerr << "[shader] Error in " << entry.filename << ": " << err << "\n";
