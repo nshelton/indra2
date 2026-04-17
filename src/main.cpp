@@ -60,6 +60,7 @@ int main(int argc, char* argv[]) {
     int tex_output        = backend.create_texture({w, h, TextureDesc::RGBA16Float, true, "output"});
     int tex_history_a     = backend.create_texture({w, h, TextureDesc::RGBA16Float, true, "history_a"});
     int tex_history_b     = backend.create_texture({w, h, TextureDesc::RGBA16Float, true, "history_b"});
+    int tex_reconstructed_depth = backend.create_texture({w, h, TextureDesc::R32Float, true, "reconstructed_depth"});
     bool ping = false;
 
     // 6. Create uniform buffer
@@ -116,6 +117,7 @@ int main(int argc, char* argv[]) {
             backend.resize_texture(tex_output, w, h);
             backend.resize_texture(tex_history_a, w, h);
             backend.resize_texture(tex_history_b, w, h);
+            backend.resize_texture(tex_reconstructed_depth, w, h);
         }
 
         // --- Build uniforms ---
@@ -204,7 +206,7 @@ int main(int argc, char* argv[]) {
                 .grid_height = h,
                 .threadgroup_w = 16,
                 .threadgroup_h = 16,
-                .textures = {tex_current_color, tex_current_depth, history_read, history_write},
+                .textures = {tex_current_color, tex_current_depth, history_read, history_write, tex_reconstructed_depth},
                 .buffers = {buf_uniforms}
             });
         }

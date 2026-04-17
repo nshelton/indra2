@@ -6,8 +6,9 @@ kernel void reconstruct_kernel(
     texture2d<float, access::read>    current_color [[texture(0)]],  // half-res
     texture2d<float, access::read>    current_depth [[texture(1)]],  // half-res
     texture2d<float, access::read>    history_in    [[texture(2)]],  // full-res, unused in spatial-only
-    texture2d<float, access::write>   history_out   [[texture(3)]],  // full-res
-    constant FrameUniforms&           frame         [[buffer(0)]],
+    texture2d<float, access::write>   history_out           [[texture(3)]],  // full-res
+    texture2d<float, access::write>   reconstructed_depth   [[texture(4)]],  // full-res — dominant-tap depth
+    constant FrameUniforms&           frame                 [[buffer(0)]],
     uint2                             gid           [[thread_position_in_grid]]
 ) {
     uint2 full_res = uint2(history_out.get_width(), history_out.get_height());
@@ -26,6 +27,8 @@ kernel void reconstruct_kernel(
 
     float4 sum  = float4(0.0);
     float  wsum = 0.0;
+    float  best_w    = -1.0;
+    float  dom_depth = z_ref;  // fallback if loop never updates (shouldn't happen)
 
     for (int dy = -1; dy <= 1; ++dy) {
         for (int dx = -1; dx <= 1; ++dx) {
@@ -38,6 +41,10 @@ kernel void reconstruct_kernel(
             float  w_d   = mix(1.0, exp(-z_rel), edge_aware);
 
             float  w     = w_s * w_d;
+            if (w > best_w) {
+                best_w    = w;
+                dom_depth = z;
+            }
             sum  += current_color.read(uint2(tap)) * w;
             wsum += w;
         }
@@ -51,4 +58,5 @@ kernel void reconstruct_kernel(
     //   resolved = mix(history, resolved, alpha);
 
     history_out.write(resolved, gid);
+    reconstructed_depth.write(float4(dom_depth, 0, 0, 0), gid);
 }
