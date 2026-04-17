@@ -52,9 +52,11 @@ struct alignas(16) FrameUniforms {
     float _pad4[2];
 
     // Shader params: each param occupies one float4 regardless of actual size.
-    float params[32][4];
+    float params[32][4];           // raymarch.metal params
+    float recon_params[8][4];      // reconstruct.metal params
     uint32_t param_count;
-    uint32_t _pad5[3];
+    uint32_t recon_param_count;
+    uint32_t _pad5[2];
 };
 
 // Texture descriptor for backend allocation

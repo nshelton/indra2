@@ -27,9 +27,11 @@ struct FrameUniforms {
     float2 jitter;
     float2 _pad4;
 
-    float4 params[32];
+    float4 params[32];          // raymarch.metal params
+    float4 recon_params[8];     // reconstruct.metal params
     uint   param_count;
-    uint3  _pad5;
+    uint   recon_param_count;
+    uint2  _pad5;
 };
 
 // ---- SDF Primitives ----
@@ -40,6 +42,20 @@ float sd_sphere(float3 p, float r) {
 float sd_box(float3 p, float3 b) {
     float3 d = abs(p) - b;
     return min(max(d.x, max(d.y, d.z)), 0.0) + length(max(d, 0.0));
+}
+
+// ---- Rotation ----
+// Rotation matrix around an arbitrary axis (angle in radians)
+float3x3 rot_axis(float3 axis, float angle) {
+    float c = cos(angle);
+    float s = sin(angle);
+    float t = 1.0 - c;
+    float3 a = normalize(axis);
+    return float3x3(
+        float3(t*a.x*a.x + c,     t*a.x*a.y - s*a.z, t*a.x*a.z + s*a.y),
+        float3(t*a.x*a.y + s*a.z, t*a.y*a.y + c,      t*a.y*a.z - s*a.x),
+        float3(t*a.x*a.z - s*a.y, t*a.y*a.z + s*a.x, t*a.z*a.z + c)
+    );
 }
 
 // ---- Fractal Utilities ----
