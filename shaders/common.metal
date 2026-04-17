@@ -14,10 +14,10 @@ struct FrameUniforms {
     float2 mouse;
     float2 mouse_click;
 
-    float3 camera_pos;    float _pad1;
-    float3 camera_fwd;    float _pad2;
-    float3 camera_up;     float _pad3;
-    float3 camera_right;
+    packed_float3 camera_pos;    float _pad1;
+    packed_float3 camera_fwd;    float _pad2;
+    packed_float3 camera_up;     float _pad3;
+    packed_float3 camera_right;
     float  camera_fov;
 
     float4x4 view_proj;
@@ -68,7 +68,7 @@ struct Ray {
 
 Ray make_camera_ray(float2 pixel_pos, constant FrameUniforms& frame) {
     float2 ndc = (pixel_pos * frame.inv_resolution) * 2.0 - 1.0;
-    ndc.y = -ndc.y;
+   ndc.y = -ndc.y;
 
     float aspect = frame.resolution.x * frame.inv_resolution.y;
     float half_fov = tan(frame.camera_fov * 0.5);
