@@ -14,7 +14,7 @@ struct Camera {
     // Controller settings
     float rotate_speed   = 1.0f;
     float pan_speed      = 1.0f;
-    float zoom_speed     = 1.0f;
+    float zoom_speed     = 0.3f;
     float keyboard_speed = 1.0f;
     float min_distance   = 0.01f;
     float max_distance   = 1000.0f;
