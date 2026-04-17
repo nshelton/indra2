@@ -193,21 +193,37 @@ int main(int argc, char* argv[]) {
             });
         }
 
-        // Pass 2: Present (full-res)
+        // Pass 2: Reconstruct (full-res, half → full with joint-bilateral)
+        int rc_pipeline = shaders.get_pipeline("reconstruct_kernel");
+        int history_read  = ping ? tex_history_a : tex_history_b;
+        int history_write = ping ? tex_history_b : tex_history_a;
+        if (rc_pipeline >= 0) {
+            backend.dispatch({
+                .pipeline_id = rc_pipeline,
+                .grid_width = w,
+                .grid_height = h,
+                .threadgroup_w = 16,
+                .threadgroup_h = 16,
+                .textures = {tex_current_color, tex_current_depth, history_read, history_write},
+                .buffers = {buf_uniforms}
+            });
+        }
+
+        // Pass 3: Present (full-res passthrough stub)
         int present_pipeline = shaders.get_pipeline("present_kernel");
         if (present_pipeline >= 0) {
-            int history_read = ping ? tex_history_a : tex_history_b;
             backend.dispatch({
                 .pipeline_id = present_pipeline,
                 .grid_width = w,
                 .grid_height = h,
                 .threadgroup_w = 16,
                 .threadgroup_h = 16,
-                .textures = {tex_current_color, tex_current_depth, history_read, tex_output},
+                .textures = {history_write, tex_output},
                 .buffers = {buf_uniforms}
             });
-            ping = !ping;
         }
+
+        ping = !ping;
 
         // Blit to screen
         backend.blit_to_screen(tex_output);
