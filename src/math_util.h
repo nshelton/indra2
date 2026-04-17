@@ -101,3 +101,76 @@ inline bool invert(const float* m, float* out) {
 }
 
 } // namespace mat4
+
+// Minimal quaternion for trackball rotation (w, x, y, z)
+namespace quat {
+
+inline void from_axis_angle(const float* axis, float angle, float* out) {
+    float half = angle * 0.5f;
+    float s = std::sin(half);
+    out[0] = std::cos(half); // w
+    out[1] = axis[0] * s;    // x
+    out[2] = axis[1] * s;    // y
+    out[3] = axis[2] * s;    // z
+}
+
+// Rotate a vector by a quaternion: q * v * q_conjugate
+inline void rotate_vec3(const float* q, const float* v, float* out) {
+    // q * (0, v) * conj(q)
+    // Expand using quaternion multiplication
+    float qw = q[0], qx = q[1], qy = q[2], qz = q[3];
+
+    // t = 2 * cross(q.xyz, v)
+    float tx = 2.0f * (qy * v[2] - qz * v[1]);
+    float ty = 2.0f * (qz * v[0] - qx * v[2]);
+    float tz = 2.0f * (qx * v[1] - qy * v[0]);
+
+    // result = v + qw * t + cross(q.xyz, t)
+    out[0] = v[0] + qw * tx + (qy * tz - qz * ty);
+    out[1] = v[1] + qw * ty + (qz * tx - qx * tz);
+    out[2] = v[2] + qw * tz + (qx * ty - qy * tx);
+}
+
+} // namespace quat
+
+// Float3 helpers (inline, no types)
+namespace v3 {
+
+inline float dot(const float* a, const float* b) {
+    return a[0]*b[0] + a[1]*b[1] + a[2]*b[2];
+}
+
+inline float length(const float* v) {
+    return std::sqrt(dot(v, v));
+}
+
+inline void normalize(const float* v, float* out) {
+    float l = length(v);
+    if (l > 1e-8f) { out[0] = v[0]/l; out[1] = v[1]/l; out[2] = v[2]/l; }
+    else { out[0] = out[1] = out[2] = 0; }
+}
+
+inline void cross(const float* a, const float* b, float* out) {
+    out[0] = a[1]*b[2] - a[2]*b[1];
+    out[1] = a[2]*b[0] - a[0]*b[2];
+    out[2] = a[0]*b[1] - a[1]*b[0];
+}
+
+inline void sub(const float* a, const float* b, float* out) {
+    out[0] = a[0]-b[0]; out[1] = a[1]-b[1]; out[2] = a[2]-b[2];
+}
+
+inline void add(const float* a, const float* b, float* out) {
+    out[0] = a[0]+b[0]; out[1] = a[1]+b[1]; out[2] = a[2]+b[2];
+}
+
+inline void scale(const float* v, float s, float* out) {
+    out[0] = v[0]*s; out[1] = v[1]*s; out[2] = v[2]*s;
+}
+
+inline void mad(const float* a, const float* b, float s, float* out) {
+    // out = a + b * s
+    out[0] = a[0]+b[0]*s; out[1] = a[1]+b[1]*s; out[2] = a[2]+b[2]*s;
+}
+
+} // namespace v3

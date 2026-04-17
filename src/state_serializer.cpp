@@ -17,12 +17,13 @@ void StateSerializer::save(const Camera& camera, const ShaderManager& shaders) {
     // Camera
     j["camera"] = {
         {"pos", {camera.pos[0], camera.pos[1], camera.pos[2]}},
-        {"yaw", camera.yaw},
-        {"pitch", camera.pitch},
+        {"target", {camera.target[0], camera.target[1], camera.target[2]}},
         {"fov", camera.fov},
-        {"speed", camera.speed},
-        {"sensitivity", camera.sensitivity},
-        {"show_grid", camera.show_grid}
+        {"show_grid", camera.show_grid},
+        {"rotate_speed", camera.rotate_speed},
+        {"pan_speed", camera.pan_speed},
+        {"zoom_speed", camera.zoom_speed},
+        {"keyboard_speed", camera.keyboard_speed}
     };
 
     // Shader params — keyed by filename, then by param name
@@ -52,6 +53,12 @@ void StateSerializer::save(const Camera& camera, const ShaderManager& shaders) {
 
 // ---- Load ----
 
+static void load_float3(const json& j, const char* key, float* out) {
+    if (j.contains(key) && j[key].is_array() && j[key].size() >= 3) {
+        out[0] = j[key][0]; out[1] = j[key][1]; out[2] = j[key][2];
+    }
+}
+
 void StateSerializer::load(Camera& camera, ShaderManager& shaders) {
     std::ifstream f(file_path_);
     if (!f.is_open()) {
@@ -73,15 +80,14 @@ void StateSerializer::load(Camera& camera, ShaderManager& shaders) {
     // Camera
     if (j.contains("camera")) {
         auto& c = j["camera"];
-        if (c.contains("pos") && c["pos"].is_array() && c["pos"].size() >= 3) {
-            camera.pos[0] = c["pos"][0]; camera.pos[1] = c["pos"][1]; camera.pos[2] = c["pos"][2];
-        }
-        if (c.contains("yaw"))         camera.yaw         = c["yaw"];
-        if (c.contains("pitch"))       camera.pitch       = c["pitch"];
-        if (c.contains("fov"))         camera.fov         = c["fov"];
-        if (c.contains("speed"))       camera.speed       = c["speed"];
-        if (c.contains("sensitivity")) camera.sensitivity = c["sensitivity"];
-        if (c.contains("show_grid"))   camera.show_grid   = c["show_grid"];
+        load_float3(c, "pos", camera.pos);
+        load_float3(c, "target", camera.target);
+        if (c.contains("fov"))            camera.fov            = c["fov"];
+        if (c.contains("show_grid"))      camera.show_grid      = c["show_grid"];
+        if (c.contains("rotate_speed"))   camera.rotate_speed   = c["rotate_speed"];
+        if (c.contains("pan_speed"))      camera.pan_speed      = c["pan_speed"];
+        if (c.contains("zoom_speed"))     camera.zoom_speed     = c["zoom_speed"];
+        if (c.contains("keyboard_speed")) camera.keyboard_speed = c["keyboard_speed"];
     }
 
     // Shader params
@@ -107,10 +113,13 @@ void StateSerializer::load(Camera& camera, ShaderManager& shaders) {
 
 static bool camera_eq(const Camera& a, const Camera& b) {
     return std::memcmp(a.pos, b.pos, sizeof(a.pos)) == 0 &&
-           a.yaw == b.yaw && a.pitch == b.pitch &&
-           a.fov == b.fov && a.speed == b.speed &&
-           a.sensitivity == b.sensitivity &&
-           a.show_grid == b.show_grid;
+           std::memcmp(a.target, b.target, sizeof(a.target)) == 0 &&
+           a.fov == b.fov &&
+           a.show_grid == b.show_grid &&
+           a.rotate_speed == b.rotate_speed &&
+           a.pan_speed == b.pan_speed &&
+           a.zoom_speed == b.zoom_speed &&
+           a.keyboard_speed == b.keyboard_speed;
 }
 
 bool StateSerializer::state_differs(const Camera& camera, const ShaderManager& shaders) const {
@@ -142,12 +151,10 @@ void StateSerializer::snapshot(const Camera& camera, const ShaderManager& shader
 
 void StateSerializer::save_if_changed(const Camera& camera, const ShaderManager& shaders, float time) {
     if (state_differs(camera, shaders)) {
-        // State changed — reset the debounce timer
         dirty_ = true;
         dirty_time_ = time;
         snapshot(camera, shaders);
     } else if (dirty_ && (time - dirty_time_) >= debounce_seconds_) {
-        // No changes for 2 seconds — flush to disk
         save(camera, shaders);
         dirty_ = false;
     }

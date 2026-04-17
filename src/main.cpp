@@ -102,9 +102,7 @@ int main(int argc, char* argv[]) {
         shaders.poll_and_reload();
 
         // --- Camera update ---
-        if (!ImGui::GetIO().WantCaptureMouse && !ImGui::GetIO().WantCaptureKeyboard) {
-            camera.update(dt, events.data(), (int)events.size());
-        }
+        camera.update(dt, events.data(), (int)events.size(), (float)w, (float)h);
 
         // --- Handle resize ---
         uint32_t new_w = backend.drawable_width();
@@ -214,12 +212,15 @@ int main(int argc, char* argv[]) {
         ImGui::Begin("Fractal Engine");
         ImGui::Text("%.1f fps (%.2f ms)", 1.0f / dt, dt * 1000.0f);
         ImGui::Text("Resolution: %u x %u", w, h);
-        ImGui::Text("Pos:   %.2f, %.2f, %.2f", camera.pos[0], camera.pos[1], camera.pos[2]);
-        ImGui::Text("Fwd:   %.3f, %.3f, %.3f", fwd[0], fwd[1], fwd[2]);
-        ImGui::Text("Up:    %.3f, %.3f, %.3f", up[0], up[1], up[2]);
-        ImGui::Text("Right: %.3f, %.3f, %.3f", right[0], right[1], right[2]);
-        ImGui::Text("Yaw: %.2f  Pitch: %.2f  FOV: %.2f", camera.yaw, camera.pitch, camera.fov);
-        ImGui::Text("Speed: %.2f (scroll to adjust)", camera.speed);
+        ImGui::Text("Pos:    %.2f, %.2f, %.2f", camera.pos[0], camera.pos[1], camera.pos[2]);
+        ImGui::Text("Target: %.2f, %.2f, %.2f", camera.target[0], camera.target[1], camera.target[2]);
+        ImGui::Text("Fwd:    %.3f, %.3f, %.3f", fwd[0], fwd[1], fwd[2]);
+        ImGui::Text("Up:     %.3f, %.3f, %.3f", up[0], up[1], up[2]);
+        ImGui::Text("Right:  %.3f, %.3f, %.3f", right[0], right[1], right[2]);
+        {
+            float off[3]; v3::sub(camera.pos, camera.target, off);
+            ImGui::Text("Distance: %.2f", v3::length(off));
+        }
         ImGui::Checkbox("Show Grid", &camera.show_grid);
         render_shader_errors(shaders);
         ImGui::Separator();

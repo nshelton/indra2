@@ -3,68 +3,30 @@
 #include "imgui.h"
 #include <cmath>
 #include <cstring>
+#include <algorithm>
 
 // ---- Camera ----
 
-void Camera::update(float dt, const SDL_Event* events, int event_count) {
-    // Keyboard movement
-    const bool* keys = SDL_GetKeyboardState(nullptr);
-    float fwd[3], up[3], right[3];
-    get_vectors(fwd, up, right);
-
-    float move_speed = speed * dt;
-
-    if (keys[SDL_SCANCODE_W]) { pos[0] += fwd[0]*move_speed; pos[1] += fwd[1]*move_speed; pos[2] += fwd[2]*move_speed; }
-    if (keys[SDL_SCANCODE_S]) { pos[0] -= fwd[0]*move_speed; pos[1] -= fwd[1]*move_speed; pos[2] -= fwd[2]*move_speed; }
-    if (keys[SDL_SCANCODE_D]) { pos[0] += right[0]*move_speed; pos[1] += right[1]*move_speed; pos[2] += right[2]*move_speed; }
-    if (keys[SDL_SCANCODE_A]) { pos[0] -= right[0]*move_speed; pos[1] -= right[1]*move_speed; pos[2] -= right[2]*move_speed; }
-    if (keys[SDL_SCANCODE_E] || keys[SDL_SCANCODE_SPACE]) { pos[1] += move_speed; }
-    if (keys[SDL_SCANCODE_Q] || keys[SDL_SCANCODE_LSHIFT]) { pos[1] -= move_speed; }
-
-    // Mouse look (right-click drag)
-    for (int i = 0; i < event_count; i++) {
-        const auto& e = events[i];
-        if (e.type == SDL_EVENT_MOUSE_MOTION && (e.motion.state & SDL_BUTTON_RMASK)) {
-            yaw   += e.motion.xrel * sensitivity;
-            pitch -= e.motion.yrel * sensitivity;
-            // Clamp pitch
-            if (pitch > 1.5f) pitch = 1.5f;
-            if (pitch < -1.5f) pitch = -1.5f;
-        }
-        if (e.type == SDL_EVENT_MOUSE_WHEEL) {
-            speed *= (e.wheel.y > 0) ? 1.2f : (1.0f / 1.2f);
-            if (speed < 0.01f) speed = 0.01f;
-            if (speed > 100.0f) speed = 100.0f;
-        }
-    }
-}
-
 void Camera::get_vectors(float* fwd, float* up, float* right) const {
-    fwd[0] = std::cos(pitch) * std::sin(yaw);
-    fwd[1] = std::sin(pitch);
-    fwd[2] = std::cos(pitch) * std::cos(yaw);
+    float dir[3];
+    v3::sub(target, pos, dir);
+    v3::normalize(dir, fwd);
 
-    // World up
     float world_up[3] = {0, 1, 0};
+    v3::cross(fwd, world_up, right);
+    float rl = v3::length(right);
+    if (rl > 1e-6f) {
+        right[0] /= rl; right[1] /= rl; right[2] /= rl;
+    } else {
+        right[0] = 1; right[1] = 0; right[2] = 0;
+    }
 
-    // right = normalize(cross(fwd, world_up))
-    right[0] = fwd[1] * world_up[2] - fwd[2] * world_up[1];
-    right[1] = fwd[2] * world_up[0] - fwd[0] * world_up[2];
-    right[2] = fwd[0] * world_up[1] - fwd[1] * world_up[0];
-    float rl = std::sqrt(right[0]*right[0] + right[1]*right[1] + right[2]*right[2]);
-    if (rl > 1e-6f) { right[0] /= rl; right[1] /= rl; right[2] /= rl; }
-
-    // up = cross(right, fwd)
-    up[0] = right[1] * fwd[2] - right[2] * fwd[1];
-    up[1] = right[2] * fwd[0] - right[0] * fwd[2];
-    up[2] = right[0] * fwd[1] - right[1] * fwd[0];
+    v3::cross(right, fwd, up);
 }
 
 void Camera::get_view_matrix(float* out_4x4) const {
-    float fwd[3], up[3], right[3];
-    get_vectors(fwd, up, right);
-    float center[3] = { pos[0] + fwd[0], pos[1] + fwd[1], pos[2] + fwd[2] };
-    mat4::look_at(pos, center, up, out_4x4);
+    float up[3] = {0, 1, 0};
+    mat4::look_at(pos, target, up, out_4x4);
 }
 
 void Camera::get_projection_matrix(float aspect, float near_z, float far_z, float* out_4x4) const {
@@ -76,6 +38,173 @@ void Camera::get_view_proj(float aspect, float near_z, float far_z, float* out_4
     get_view_matrix(view);
     get_projection_matrix(aspect, near_z, far_z, proj);
     mat4::multiply(proj, view, out_4x4);
+}
+
+// ---- Trackball controls ----
+
+void Camera::update(float dt, const SDL_Event* events, int event_count,
+                    float screen_w, float screen_h) {
+    for (int i = 0; i < event_count; i++) {
+        const auto& e = events[i];
+
+        if (e.type == SDL_EVENT_MOUSE_BUTTON_DOWN || e.type == SDL_EVENT_MOUSE_BUTTON_UP) {
+            if (ImGui::GetIO().WantCaptureMouse) continue;
+            bool down = (e.type == SDL_EVENT_MOUSE_BUTTON_DOWN);
+            if (e.button.button == SDL_BUTTON_LEFT)  rotating_ = down;
+            if (e.button.button == SDL_BUTTON_RIGHT) panning_  = down;
+            if (down) {
+                last_mouse_[0] = e.button.x;
+                last_mouse_[1] = e.button.y;
+            }
+        }
+
+        if (e.type == SDL_EVENT_MOUSE_MOTION) {
+            if (ImGui::GetIO().WantCaptureMouse) continue;
+            float dx = e.motion.x - last_mouse_[0];
+            float dy = e.motion.y - last_mouse_[1];
+            last_mouse_[0] = e.motion.x;
+            last_mouse_[1] = e.motion.y;
+
+            if (rotating_) rotate(dx, dy, screen_w, screen_h);
+            if (panning_)  pan(dx, dy, screen_w, screen_h);
+        }
+
+        if (e.type == SDL_EVENT_MOUSE_WHEEL) {
+            if (ImGui::GetIO().WantCaptureMouse) continue;
+            zoom(e.wheel.y);
+        }
+    }
+
+    if (!ImGui::GetIO().WantCaptureKeyboard) {
+        move_keyboard(dt);
+    }
+}
+
+void Camera::rotate(float dx, float dy, float screen_w, float screen_h) {
+    if (dx == 0 && dy == 0) return;
+
+    float offset[3];
+    v3::sub(pos, target, offset);
+
+    // Horizontal rotation around world Y
+    float angleX = -dx * rotate_speed * 0.005f;
+    float y_axis[3] = {0, 1, 0};
+    float q_y[4];
+    quat::from_axis_angle(y_axis, angleX, q_y);
+
+    float offset_after_y[3];
+    quat::rotate_vec3(q_y, offset, offset_after_y);
+
+    // Vertical rotation: compute right vector, clamp elevation
+    float fwd_dir[3];
+    v3::scale(offset_after_y, -1.0f, fwd_dir);
+    v3::normalize(fwd_dir, fwd_dir);
+
+    float world_up[3] = {0, 1, 0};
+    float right_vec[3];
+    v3::cross(fwd_dir, world_up, right_vec);
+    float rl = v3::length(right_vec);
+    if (rl < 0.01f) {
+        // Near pole fallback
+        right_vec[0] = -offset_after_y[2];
+        right_vec[1] = 0;
+        right_vec[2] = offset_after_y[0];
+        rl = v3::length(right_vec);
+        if (rl < 0.01f) { right_vec[0] = 1; right_vec[1] = 0; right_vec[2] = 0; rl = 1; }
+    }
+    v3::scale(right_vec, 1.0f / rl, right_vec);
+
+    // Clamp vertical angle to prevent gimbal lock
+    float horiz[3] = {offset_after_y[0], 0, offset_after_y[2]};
+    float horiz_dist = v3::length(horiz);
+    float current_elev = std::atan2(offset_after_y[1], horiz_dist);
+    float angleY = -dy * rotate_speed * 0.005f;
+    float new_elev = std::clamp(current_elev + angleY, -1.4f, 1.4f);
+    angleY = new_elev - current_elev;
+
+    float q_x[4];
+    quat::from_axis_angle(right_vec, angleY, q_x);
+
+    float new_offset[3];
+    quat::rotate_vec3(q_x, offset_after_y, new_offset);
+
+    v3::add(target, new_offset, pos);
+}
+
+void Camera::pan(float dx, float dy, float screen_w, float screen_h) {
+    if (dx == 0 && dy == 0) return;
+
+    float offset[3];
+    v3::sub(pos, target, offset);
+    float distance = v3::length(offset);
+
+    float pan_scale = distance * pan_speed * 0.001f;
+
+    float fwd[3], up[3], right[3];
+    get_vectors(fwd, up, right);
+
+    float world_up[3] = {0, 1, 0};
+    float pan_offset[3];
+    v3::scale(right, -dx * pan_scale, pan_offset);
+    v3::mad(pan_offset, world_up, dy * pan_scale, pan_offset);
+
+    v3::add(pos, pan_offset, pos);
+    v3::add(target, pan_offset, target);
+}
+
+void Camera::zoom(float delta) {
+    if (delta == 0) return;
+
+    float offset[3];
+    v3::sub(pos, target, offset);
+    float distance = v3::length(offset);
+
+    float zoom_amount = delta * zoom_speed * distance * 0.05f;
+    float new_distance = std::clamp(distance - zoom_amount, min_distance, max_distance);
+
+    float dir[3];
+    v3::normalize(offset, dir);
+    v3::scale(dir, new_distance, offset);
+    v3::add(target, offset, pos);
+}
+
+void Camera::move_keyboard(float dt) {
+    bool w = ImGui::IsKeyDown(ImGuiKey_W);
+    bool s = ImGui::IsKeyDown(ImGuiKey_S);
+    bool a = ImGui::IsKeyDown(ImGuiKey_A);
+    bool d = ImGui::IsKeyDown(ImGuiKey_D);
+    bool q = ImGui::IsKeyDown(ImGuiKey_Q);
+    bool e = ImGui::IsKeyDown(ImGuiKey_E);
+
+    if (!w && !s && !a && !d && !q && !e) return;
+
+    float fwd[3], up[3], right[3];
+    get_vectors(fwd, up, right);
+
+    float move[3] = {0, 0, 0};
+    if (w) v3::add(move, fwd, move);
+    if (s) { float neg[3]; v3::scale(fwd, -1, neg); v3::add(move, neg, move); }
+    if (d) v3::add(move, right, move);
+    if (a) { float neg[3]; v3::scale(right, -1, neg); v3::add(move, neg, move); }
+    float world_up[3] = {0, 1, 0};
+    float world_down[3] = {0, -1, 0};
+    if (e) v3::add(move, world_up, move);
+    if (q) v3::add(move, world_down, move);
+
+    float ml = v3::length(move);
+    if (ml < 0.001f) return;
+
+    // Scale speed by distance to target
+    float offset[3];
+    v3::sub(pos, target, offset);
+    float distance = v3::length(offset);
+    float scaled_speed = keyboard_speed * distance * dt;
+
+    v3::normalize(move, move);
+    v3::scale(move, scaled_speed, move);
+
+    v3::add(pos, move, pos);
+    v3::add(target, move, target);
 }
 
 // ---- ImGui helpers ----
