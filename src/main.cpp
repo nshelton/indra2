@@ -47,6 +47,7 @@ int main(int argc, char* argv[]) {
 
     ShaderManager shaders(backend, shader_dir);
     shaders.register_shader("raymarch.metal", "raymarch_kernel");
+    shaders.register_shader("reconstruct.metal", "reconstruct_kernel");
     shaders.register_shader("present.metal", "present_kernel");
 
     // 5. Create textures
@@ -159,11 +160,18 @@ int main(int argc, char* argv[]) {
         uniforms.jitter[0] = halton(frame_index, 2) - 0.5f;
         uniforms.jitter[1] = halton(frame_index, 3) - 0.5f;
 
-        // Pack shader params
-        const auto& params = shaders.get_params("raymarch.metal");
-        uniforms.param_count = (uint32_t)params.size();
-        for (int i = 0; i < (int)params.size() && i < 32; i++) {
-            std::memcpy(uniforms.params[i], params[i].current_val, sizeof(float) * 4);
+        // Pack raymarch params
+        const auto& rm_params = shaders.get_params("raymarch.metal");
+        uniforms.param_count = (uint32_t)rm_params.size();
+        for (int i = 0; i < (int)rm_params.size() && i < 32; i++) {
+            std::memcpy(uniforms.params[i], rm_params[i].current_val, sizeof(float) * 4);
+        }
+
+        // Pack reconstruct params
+        const auto& rc_params = shaders.get_params("reconstruct.metal");
+        uniforms.recon_param_count = (uint32_t)rc_params.size();
+        for (int i = 0; i < (int)rc_params.size() && i < 8; i++) {
+            std::memcpy(uniforms.recon_params[i], rc_params[i].current_val, sizeof(float) * 4);
         }
 
         backend.write_buffer(buf_uniforms, &uniforms, sizeof(uniforms));
@@ -216,6 +224,11 @@ int main(int argc, char* argv[]) {
         render_shader_errors(shaders);
 
         if (ImGui::CollapsingHeader("Camera")) {
+            const char* mode_names[] = {"Trackball", "FPS"};
+            int mode_idx = (int)camera.mode;
+            if (ImGui::Combo("Mode", &mode_idx, mode_names, IM_ARRAYSIZE(mode_names))) {
+                camera.mode = (CameraMode)mode_idx;
+            }
             ImGui::Text("Pos:    %.2f, %.2f, %.2f", camera.pos[0], camera.pos[1], camera.pos[2]);
             ImGui::Text("Target: %.2f, %.2f, %.2f", camera.target[0], camera.target[1], camera.target[2]);
             ImGui::Text("Fwd:    %.3f, %.3f, %.3f", fwd[0], fwd[1], fwd[2]);
@@ -233,6 +246,9 @@ int main(int argc, char* argv[]) {
 
         if (ImGui::CollapsingHeader("Shader Parameters", ImGuiTreeNodeFlags_DefaultOpen)) {
             render_shader_params(shaders.get_params_mut("raymarch.metal"));
+        }
+        if (ImGui::CollapsingHeader("Reconstruction", ImGuiTreeNodeFlags_DefaultOpen)) {
+            render_shader_params(shaders.get_params_mut("reconstruct.metal"));
         }
         ImGui::End();
 
