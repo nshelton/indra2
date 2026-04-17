@@ -59,13 +59,73 @@ kernel void reconstruct_kernel(
         }
     }
 
-    float4 resolved = sum / max(wsum, 1e-6);
+    float4 resolved_current = sum / max(wsum, 1e-6);
 
-    // TAA seam — no-op today. When temporal accumulation lands:
-    //   float2 prev_uv = reproject(gid, frame);
-    //   float4 history = history_in.read(clamp_uv(prev_uv));
-    //   resolved = mix(history, resolved, alpha);
+    // --- TAA: reproject + clamp + blend ---
 
-    history_out.write(resolved, gid);
+    float4 history_clamped = resolved_current;
+    float  alpha           = taa_alpha;
+
+    // Edge cases that force TAA off for this pixel
+    const float max_dist_threshold = 99.0;  // matches raymarch's max_dist = 100.0
+    bool skip_taa = (frame.frame_index == 0u) || (dom_depth >= max_dist_threshold);
+
+    if (!skip_taa) {
+        // Build world-space hit point using the same camera basis as raymarch
+        float2 ndc = (float2(gid) + 0.5) * frame.inv_resolution * 2.0 - 1.0;
+        ndc.y = -ndc.y;
+        float  aspect   = frame.resolution.x * frame.inv_resolution.y;
+        float  half_fov = tan(frame.camera_fov * 0.5);
+        float3 ray_dir  = normalize(
+            frame.camera_fwd +
+            frame.camera_right * ndc.x * half_fov * aspect +
+            frame.camera_up    * ndc.y * half_fov
+        );
+        float3 world_pos = frame.camera_pos + ray_dir * dom_depth;
+
+        float4 prev_clip = frame.prev_view_proj * float4(world_pos, 1.0);
+
+        if (prev_clip.w <= 0.0) {
+            alpha = 1.0;  // behind prev camera
+        } else {
+            float2 prev_ndc = prev_clip.xy / prev_clip.w;
+            float2 prev_uv  = prev_ndc * 0.5 + 0.5;
+            prev_uv.y       = 1.0 - prev_uv.y;  // match top-left pixel convention
+
+            if (any(prev_uv < 0.0) || any(prev_uv > 1.0)) {
+                alpha = 1.0;  // off-screen in prev frame
+            } else {
+                // Manual bilinear fetch from history_in
+                float2 prev_pix = prev_uv * float2(history_in.get_width(), history_in.get_height());
+                int2   i0       = int2(floor(prev_pix - 0.5));
+                float2 f        = prev_pix - 0.5 - float2(i0);
+                int2   hw       = int2(history_in.get_width(), history_in.get_height());
+                int2   c00      = clamp(i0 + int2(0, 0), int2(0), hw - 1);
+                int2   c10      = clamp(i0 + int2(1, 0), int2(0), hw - 1);
+                int2   c01      = clamp(i0 + int2(0, 1), int2(0), hw - 1);
+                int2   c11      = clamp(i0 + int2(1, 1), int2(0), hw - 1);
+                float4 h00      = history_in.read(uint2(c00));
+                float4 h10      = history_in.read(uint2(c10));
+                float4 h01      = history_in.read(uint2(c01));
+                float4 h11      = history_in.read(uint2(c11));
+                float4 h0       = mix(h00, h10, f.x);
+                float4 h1       = mix(h01, h11, f.x);
+                float4 history  = mix(h0, h1, f.y);
+
+                // AABB clamp with padding
+                float4 ngb_center = 0.5 * (ngb_min + ngb_max);
+                float4 ngb_half   = 0.5 * (ngb_max - ngb_min) * taa_clamp_scale;
+                float4 ngb_lo     = ngb_center - ngb_half;
+                float4 ngb_hi     = ngb_center + ngb_half;
+                history_clamped   = clamp(history, ngb_lo, ngb_hi);
+            }
+        }
+    } else {
+        alpha = 1.0;
+    }
+
+    float4 final = mix(history_clamped, resolved_current, alpha);
+
+    history_out.write(final, gid);
     reconstructed_depth.write(float4(dom_depth, 0, 0, 0), gid);
 }
