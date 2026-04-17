@@ -12,6 +12,7 @@ struct Camera {
     float fov          = 1.2f;     // radians (~70 degrees)
     float speed        = 2.0f;
     float sensitivity  = 0.003f;
+    bool  show_grid    = true;
 
     void update(float dt, const SDL_Event* events, int event_count);
     void get_vectors(float* fwd, float* up, float* right) const;

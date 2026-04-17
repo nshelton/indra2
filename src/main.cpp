@@ -124,6 +124,7 @@ int main(int argc, char* argv[]) {
         uniforms.time = time;
         uniforms.delta_time = dt;
         uniforms.frame_index = frame_index;
+        uniforms.flags = camera.show_grid ? 1u : 0u;
         uniforms.resolution[0] = (float)w;
         uniforms.resolution[1] = (float)h;
         uniforms.inv_resolution[0] = 1.0f / (float)w;
@@ -215,6 +216,7 @@ int main(int argc, char* argv[]) {
         ImGui::Text("Resolution: %u x %u", w, h);
         ImGui::Text("Camera: %.2f, %.2f, %.2f", camera.pos[0], camera.pos[1], camera.pos[2]);
         ImGui::Text("Speed: %.2f (scroll to adjust)", camera.speed);
+        ImGui::Checkbox("Show Grid", &camera.show_grid);
         render_shader_errors(shaders);
         ImGui::Separator();
         ImGui::Text("Shader Parameters");

@@ -6,7 +6,7 @@ struct FrameUniforms {
     float  time;
     float  delta_time;
     uint   frame_index;
-    uint   _pad0;
+    uint   flags;              // bit 0: show_grid
 
     float2 resolution;
     float2 inv_resolution;

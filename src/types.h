@@ -24,7 +24,7 @@ struct alignas(16) FrameUniforms {
     float time;
     float delta_time;
     uint32_t frame_index;
-    uint32_t _pad0;
+    uint32_t flags;            // bit 0: show_grid
 
     float resolution[2];
     float inv_resolution[2];

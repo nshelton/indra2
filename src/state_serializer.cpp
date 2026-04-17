@@ -21,7 +21,8 @@ void StateSerializer::save(const Camera& camera, const ShaderManager& shaders) {
         {"pitch", camera.pitch},
         {"fov", camera.fov},
         {"speed", camera.speed},
-        {"sensitivity", camera.sensitivity}
+        {"sensitivity", camera.sensitivity},
+        {"show_grid", camera.show_grid}
     };
 
     // Shader params — keyed by filename, then by param name
@@ -80,6 +81,7 @@ void StateSerializer::load(Camera& camera, ShaderManager& shaders) {
         if (c.contains("fov"))         camera.fov         = c["fov"];
         if (c.contains("speed"))       camera.speed       = c["speed"];
         if (c.contains("sensitivity")) camera.sensitivity = c["sensitivity"];
+        if (c.contains("show_grid"))   camera.show_grid   = c["show_grid"];
     }
 
     // Shader params
@@ -107,7 +109,8 @@ static bool camera_eq(const Camera& a, const Camera& b) {
     return std::memcmp(a.pos, b.pos, sizeof(a.pos)) == 0 &&
            a.yaw == b.yaw && a.pitch == b.pitch &&
            a.fov == b.fov && a.speed == b.speed &&
-           a.sensitivity == b.sensitivity;
+           a.sensitivity == b.sensitivity &&
+           a.show_grid == b.show_grid;
 }
 
 bool StateSerializer::state_differs(const Camera& camera, const ShaderManager& shaders) const {
