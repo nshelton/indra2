@@ -6,9 +6,9 @@
 
 // FPS camera
 struct Camera {
-    float pos[3]       = {0, 0, -3};
+    float pos[3]       = {0, 3, -5};
     float yaw          = 0;        // radians
-    float pitch        = 0;        // radians
+    float pitch        = -0.5f;    // radians, looking slightly down
     float fov          = 1.2f;     // radians (~70 degrees)
     float speed        = 2.0f;
     float sensitivity  = 0.003f;

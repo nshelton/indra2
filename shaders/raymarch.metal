@@ -77,9 +77,9 @@ kernel void raymarch_kernel(
             DE(hit_pos + float3(0, 0, eps), frame) - DE(hit_pos - float3(0, 0, eps), frame)
         ));
 
-        float3 light_dir = normalize(float3(0.5, 1.0, -0.3));
+        float3 light_dir = normalize(float3(0.5, 1.0, 0.5));
         float ndl = max(dot(n, light_dir), 0.0);
-        float ambient = 0.15;
+        float ambient = 0.25;
 
         float3 surface_col = frame.params[1].xyz;
         color = surface_col * (ndl + ambient);
