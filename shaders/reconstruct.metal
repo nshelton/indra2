@@ -1,6 +1,8 @@
 // @param filter_sigma       float 0.1 3.0 1.0
 // @param filter_depth_sigma float 0.001 0.5 0.05
 // @param edge_aware         float 0.0 1.0 1.0
+// @param taa_alpha          float 0.0 1.0 0.1
+// @param taa_clamp_scale    float 0.1 3.0 1.0
 
 kernel void reconstruct_kernel(
     texture2d<float, access::read>    current_color [[texture(0)]],  // half-res
@@ -14,9 +16,11 @@ kernel void reconstruct_kernel(
     uint2 full_res = uint2(history_out.get_width(), history_out.get_height());
     if (gid.x >= full_res.x || gid.y >= full_res.y) return;
 
-    float sigma       = frame.recon_params[0].x;
-    float depth_sigma = frame.recon_params[1].x;
-    float edge_aware  = frame.recon_params[2].x;
+    float sigma           = frame.recon_params[0].x;
+    float depth_sigma     = frame.recon_params[1].x;
+    float edge_aware      = frame.recon_params[2].x;
+    float taa_alpha       = frame.recon_params[3].x;
+    float taa_clamp_scale = frame.recon_params[4].x;
 
     int2  half_res  = int2(current_color.get_width(), current_color.get_height());
     float2 half_coord = (float2(gid) + 0.5) * 0.5 - 0.5;
@@ -29,6 +33,8 @@ kernel void reconstruct_kernel(
     float  wsum = 0.0;
     float  best_w    = -1.0;
     float  dom_depth = z_ref;  // fallback if loop never updates (shouldn't happen)
+    float4 ngb_min   = float4(1e30);
+    float4 ngb_max   = float4(-1e30);
 
     for (int dy = -1; dy <= 1; ++dy) {
         for (int dx = -1; dx <= 1; ++dx) {
@@ -45,7 +51,10 @@ kernel void reconstruct_kernel(
                 best_w    = w;
                 dom_depth = z;
             }
-            sum  += current_color.read(uint2(tap)) * w;
+            float4 tap_color = current_color.read(uint2(tap));
+            ngb_min          = min(ngb_min, tap_color);
+            ngb_max          = max(ngb_max, tap_color);
+            sum  += tap_color * w;
             wsum += w;
         }
     }
