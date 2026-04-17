@@ -16,6 +16,7 @@ void StateSerializer::save(const Camera& camera, const ShaderManager& shaders) {
 
     // Camera
     j["camera"] = {
+        {"mode", camera.mode == CameraMode::FPS ? "fps" : "trackball"},
         {"pos", {camera.pos[0], camera.pos[1], camera.pos[2]}},
         {"target", {camera.target[0], camera.target[1], camera.target[2]}},
         {"fov", camera.fov},
@@ -80,6 +81,9 @@ void StateSerializer::load(Camera& camera, ShaderManager& shaders) {
     // Camera
     if (j.contains("camera")) {
         auto& c = j["camera"];
+        if (c.contains("mode") && c["mode"].is_string()) {
+            camera.mode = (c["mode"] == "fps") ? CameraMode::FPS : CameraMode::Trackball;
+        }
         load_float3(c, "pos", camera.pos);
         load_float3(c, "target", camera.target);
         if (c.contains("fov"))            camera.fov            = c["fov"];
@@ -112,7 +116,8 @@ void StateSerializer::load(Camera& camera, ShaderManager& shaders) {
 // ---- Change detection ----
 
 static bool camera_eq(const Camera& a, const Camera& b) {
-    return std::memcmp(a.pos, b.pos, sizeof(a.pos)) == 0 &&
+    return a.mode == b.mode &&
+           std::memcmp(a.pos, b.pos, sizeof(a.pos)) == 0 &&
            std::memcmp(a.target, b.target, sizeof(a.target)) == 0 &&
            a.fov == b.fov &&
            a.show_grid == b.show_grid &&

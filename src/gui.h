@@ -4,8 +4,14 @@
 #include <SDL3/SDL.h>
 #include <vector>
 
-// Trackball camera (orbits around a target point)
+enum class CameraMode { Trackball, FPS };
+
+// Camera supports two modes:
+//   Trackball: left-drag orbits target, right-drag pans, wheel zooms.
+//   FPS:       left-drag rotates view around pos; right-drag and wheel are no-ops.
+// pos/target are the source of truth in both modes; mode switch preserves view direction.
 struct Camera {
+    CameraMode mode    = CameraMode::Trackball;
     float pos[3]       = {3, 3, -5};
     float target[3]    = {0, 0, 0};
     float fov          = 1.2f;     // radians (~70 degrees)
@@ -35,6 +41,7 @@ private:
     float last_mouse_[2] = {};
 
     void rotate(float dx, float dy, float screen_w, float screen_h);
+    void look(float dx, float dy);
     void pan(float dx, float dy, float screen_w, float screen_h);
     void zoom(float delta);
     void move_keyboard(float dt);

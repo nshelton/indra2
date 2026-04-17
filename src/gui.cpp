@@ -51,7 +51,7 @@ void Camera::update(float dt, const SDL_Event* events, int event_count,
             if (ImGui::GetIO().WantCaptureMouse) continue;
             bool down = (e.type == SDL_EVENT_MOUSE_BUTTON_DOWN);
             if (e.button.button == SDL_BUTTON_LEFT)  rotating_ = down;
-            if (e.button.button == SDL_BUTTON_RIGHT) panning_  = down;
+            if (e.button.button == SDL_BUTTON_RIGHT && mode == CameraMode::Trackball) panning_ = down;
             if (down) {
                 last_mouse_[0] = e.button.x;
                 last_mouse_[1] = e.button.y;
@@ -65,13 +65,16 @@ void Camera::update(float dt, const SDL_Event* events, int event_count,
             last_mouse_[0] = e.motion.x;
             last_mouse_[1] = e.motion.y;
 
-            if (rotating_) rotate(dx, dy, screen_w, screen_h);
-            if (panning_)  pan(dx, dy, screen_w, screen_h);
+            if (rotating_) {
+                if (mode == CameraMode::FPS) look(dx, dy);
+                else                         rotate(dx, dy, screen_w, screen_h);
+            }
+            if (panning_) pan(dx, dy, screen_w, screen_h);
         }
 
         if (e.type == SDL_EVENT_MOUSE_WHEEL) {
             if (ImGui::GetIO().WantCaptureMouse) continue;
-            zoom(e.wheel.y);
+            if (mode == CameraMode::Trackball) zoom(e.wheel.y);
         }
     }
 
@@ -114,12 +117,15 @@ void Camera::rotate(float dx, float dy, float screen_w, float screen_h) {
     }
     v3::scale(right_vec, 1.0f / rl, right_vec);
 
-    // Clamp vertical angle to prevent gimbal lock
+    // Scale dy by cos(elev) so vertical input tapers to 0 at the poles —
+    // no hard wall, just asymptotic slowdown. The clamp is a numerical
+    // safety so we stay off the cross(fwd, world_up) = 0 singularity.
     float horiz[3] = {offset_after_y[0], 0, offset_after_y[2]};
     float horiz_dist = v3::length(horiz);
     float current_elev = std::atan2(offset_after_y[1], horiz_dist);
-    float angleY = -dy * rotate_speed * 0.005f;
-    float new_elev = std::clamp(current_elev + angleY, -1.4f, 1.4f);
+    float angleY = -dy * rotate_speed * 0.005f * std::cos(current_elev);
+    constexpr float MAX_ELEV = 1.555f;
+    float new_elev = std::clamp(current_elev + angleY, -MAX_ELEV, MAX_ELEV);
     angleY = new_elev - current_elev;
 
     float q_x[4];
@@ -129,6 +135,55 @@ void Camera::rotate(float dx, float dy, float screen_w, float screen_h) {
     quat::rotate_vec3(q_x, offset_after_y, new_offset);
 
     v3::add(target, new_offset, pos);
+}
+
+// FPS look: rotate target around pos. Mirrors rotate() but uses the
+// target-relative offset, so the same dx/dy produce the same view rotation.
+void Camera::look(float dx, float dy) {
+    if (dx == 0 && dy == 0) return;
+
+    float offset[3];
+    v3::sub(target, pos, offset);
+
+    float angleX = -dx * rotate_speed * 0.005f;
+    float y_axis[3] = {0, 1, 0};
+    float q_y[4];
+    quat::from_axis_angle(y_axis, angleX, q_y);
+
+    float offset_after_y[3];
+    quat::rotate_vec3(q_y, offset, offset_after_y);
+
+    float fwd_dir[3];
+    v3::normalize(offset_after_y, fwd_dir);
+
+    float world_up[3] = {0, 1, 0};
+    float right_vec[3];
+    v3::cross(fwd_dir, world_up, right_vec);
+    float rl = v3::length(right_vec);
+    if (rl < 0.01f) {
+        right_vec[0] = -offset_after_y[2];
+        right_vec[1] = 0;
+        right_vec[2] = offset_after_y[0];
+        rl = v3::length(right_vec);
+        if (rl < 0.01f) { right_vec[0] = 1; right_vec[1] = 0; right_vec[2] = 0; rl = 1; }
+    }
+    v3::scale(right_vec, 1.0f / rl, right_vec);
+
+    float horiz[3] = {offset_after_y[0], 0, offset_after_y[2]};
+    float horiz_dist = v3::length(horiz);
+    float current_elev = std::atan2(offset_after_y[1], horiz_dist);
+    float angleY = -dy * rotate_speed * 0.005f * std::cos(current_elev);
+    constexpr float MAX_ELEV = 1.555f;
+    float new_elev = std::clamp(current_elev + angleY, -MAX_ELEV, MAX_ELEV);
+    angleY = new_elev - current_elev;
+
+    float q_x[4];
+    quat::from_axis_angle(right_vec, angleY, q_x);
+
+    float new_offset[3];
+    quat::rotate_vec3(q_x, offset_after_y, new_offset);
+
+    v3::add(pos, new_offset, target);
 }
 
 void Camera::pan(float dx, float dy, float screen_w, float screen_h) {
@@ -143,10 +198,9 @@ void Camera::pan(float dx, float dy, float screen_w, float screen_h) {
     float fwd[3], up[3], right[3];
     get_vectors(fwd, up, right);
 
-    float world_up[3] = {0, 1, 0};
     float pan_offset[3];
     v3::scale(right, -dx * pan_scale, pan_offset);
-    v3::mad(pan_offset, world_up, dy * pan_scale, pan_offset);
+    v3::mad(pan_offset, up, dy * pan_scale, pan_offset);
 
     v3::add(pos, pan_offset, pos);
     v3::add(target, pan_offset, target);
@@ -186,10 +240,8 @@ void Camera::move_keyboard(float dt) {
     if (s) { float neg[3]; v3::scale(fwd, -1, neg); v3::add(move, neg, move); }
     if (d) v3::add(move, right, move);
     if (a) { float neg[3]; v3::scale(right, -1, neg); v3::add(move, neg, move); }
-    float world_up[3] = {0, 1, 0};
-    float world_down[3] = {0, -1, 0};
-    if (e) v3::add(move, world_up, move);
-    if (q) v3::add(move, world_down, move);
+    if (e) v3::add(move, up, move);
+    if (q) { float neg[3]; v3::scale(up, -1, neg); v3::add(move, neg, move); }
 
     float ml = v3::length(move);
     if (ml < 0.001f) return;
