@@ -25,7 +25,9 @@ static uint64_t file_timestamp(const std::string& path) {
 }
 
 ShaderManager::ShaderManager(MetalBackend& backend, const std::string& shader_dir)
-    : backend_(backend), shader_dir_(shader_dir) {}
+    : backend_(backend), shader_dir_(shader_dir) {
+    common_timestamp_ = file_timestamp(shader_dir_ + "/common.metal");
+}
 
 void ShaderManager::register_shader(const std::string& filename, const std::string& kernel_name) {
     ShaderEntry entry;
@@ -39,10 +41,15 @@ void ShaderManager::register_shader(const std::string& filename, const std::stri
 }
 
 bool ShaderManager::poll_and_reload() {
+    // common.metal is prepended to every shader, so a change to it reloads all
+    uint64_t common_ts = file_timestamp(shader_dir_ + "/common.metal");
+    bool common_changed = (common_ts != common_timestamp_ && common_ts != 0);
+    common_timestamp_ = common_ts;
+
     bool any_reloaded = false;
     for (auto& entry : entries_) {
         uint64_t ts = file_timestamp(entry.full_path);
-        if (ts != entry.last_modified && ts != 0) {
+        if ((ts != entry.last_modified && ts != 0) || common_changed) {
             reload_shader(entry);
             any_reloaded = true;
         }

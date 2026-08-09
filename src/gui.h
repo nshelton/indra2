@@ -20,10 +20,15 @@ struct Camera {
     // Controller settings
     float rotate_speed   = 1.0f;
     float pan_speed      = 1.0f;
-    float zoom_speed     = 0.3f;
-    float keyboard_speed = 1.0f;
+    float zoom_speed     = 0.2f;
+    float keyboard_speed = 0.5f;
     float min_distance   = 0.01f;
     float max_distance   = 1000.0f;
+
+    // Scale keyboard speed by distance to the fractal surface (depth readback)
+    bool  adaptive_speed = true;
+    // Smoothed distance to fractal surface (from depth readback); <= 0 until first readback.
+    float nav_distance   = -1.0f;
 
     // Derived vectors (computed by get_vectors)
     void get_vectors(float* fwd, float* up, float* right) const;

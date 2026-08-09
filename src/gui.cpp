@@ -246,10 +246,15 @@ void Camera::move_keyboard(float dt) {
     float ml = v3::length(move);
     if (ml < 0.001f) return;
 
-    // Scale speed by distance to target
-    float offset[3];
-    v3::sub(pos, target, offset);
-    float distance = v3::length(offset);
+    // Scale speed by distance to the fractal surface; fall back to
+    // distance-to-target when disabled or before the first depth readback lands.
+    float distance = adaptive_speed ? nav_distance : -1.0f;
+    if (distance <= 0) {
+        float offset[3];
+        v3::sub(pos, target, offset);
+        distance = v3::length(offset);
+    }
+    distance = std::max(distance, min_distance);
     float scaled_speed = keyboard_speed * distance * dt;
 
     v3::normalize(move, move);

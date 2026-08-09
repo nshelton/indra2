@@ -6,6 +6,7 @@
 #include "metal_backend.h"
 #include "imgui.h"
 #include "imgui_impl_metal.h"
+#include <atomic>
 #include <vector>
 #include <string>
 
@@ -29,6 +30,9 @@ struct MetalBackend::Impl {
 
     // Track texture descs for resize
     std::vector<TextureDesc> texture_descs;
+
+    // Written by the command buffer completed-handler (GPU-internal queue)
+    std::atomic<double> gpu_ms{0.0};
 };
 
 // ---- Construction / destruction ----
@@ -153,6 +157,11 @@ void MetalBackend::write_buffer(int buffer_id, const void* data, size_t size, si
     memcpy((uint8_t*)[buf contents] + offset, data, size);
 }
 
+const void* MetalBackend::buffer_contents(int buffer_id) const {
+    if (buffer_id < 0 || buffer_id >= (int)impl->buffers.size()) return nullptr;
+    return [impl->buffers[buffer_id] contents];
+}
+
 // ---- Shader compilation ----
 
 int MetalBackend::compile_kernel(const std::string& msl_source,
@@ -200,6 +209,12 @@ void MetalBackend::imgui_shutdown() {
 }
 
 void MetalBackend::imgui_new_frame() {
+    // NewFrame snapshots the descriptor's texture sampleCount for pipeline
+    // creation — on frame 0 no texture is attached yet (render_imgui assigns
+    // it later), which fails pipeline creation with rasterSampleCount = 0.
+    if (impl->current_drawable) {
+        impl->imgui_render_pass.colorAttachments[0].texture = impl->current_drawable.texture;
+    }
     ImGui_ImplMetal_NewFrame(impl->imgui_render_pass);
 }
 
@@ -255,6 +270,25 @@ void MetalBackend::blit_to_screen(int source_texture_id) {
     [blit endEncoding];
 }
 
+void MetalBackend::copy_texture_to_buffer(int texture_id, int buffer_id,
+                                          uint32_t x, uint32_t y, uint32_t w, uint32_t h,
+                                          uint32_t bytes_per_pixel) {
+    if (texture_id < 0 || texture_id >= (int)impl->textures.size()) return;
+    if (buffer_id < 0 || buffer_id >= (int)impl->buffers.size()) return;
+
+    id<MTLBlitCommandEncoder> blit = [impl->current_cmd_buffer blitCommandEncoder];
+    [blit copyFromTexture:impl->textures[texture_id]
+              sourceSlice:0
+              sourceLevel:0
+             sourceOrigin:MTLOriginMake(x, y, 0)
+               sourceSize:MTLSizeMake(w, h, 1)
+                 toBuffer:impl->buffers[buffer_id]
+        destinationOffset:0
+   destinationBytesPerRow:w * bytes_per_pixel
+ destinationBytesPerImage:w * h * bytes_per_pixel];
+    [blit endEncoding];
+}
+
 void MetalBackend::render_imgui() {
     if (!impl->current_drawable) return;
 
@@ -271,12 +305,20 @@ void MetalBackend::end_frame() {
     if (impl->current_drawable) {
         [impl->current_cmd_buffer presentDrawable:impl->current_drawable];
     }
+    Impl* imp = impl.get();
+    [impl->current_cmd_buffer addCompletedHandler:^(id<MTLCommandBuffer> cb) {
+        imp->gpu_ms.store((cb.GPUEndTime - cb.GPUStartTime) * 1000.0);
+    }];
     [impl->current_cmd_buffer commit];
     impl->current_drawable = nil;
     impl->current_cmd_buffer = nil;
 }
 
 // ---- Getters ----
+
+float MetalBackend::gpu_frame_ms() const {
+    return (float)impl->gpu_ms.load();
+}
 
 uint32_t MetalBackend::drawable_width() const {
     CGSize size = impl->metal_layer.drawableSize;

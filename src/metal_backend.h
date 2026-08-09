@@ -23,6 +23,7 @@ public:
     int create_buffer(size_t size_bytes, const std::string& label);
     void destroy_buffer(int buffer_id);
     void write_buffer(int buffer_id, const void* data, size_t size, size_t offset = 0);
+    const void* buffer_contents(int buffer_id) const;
 
     // Shader compilation — returns pipeline ID, -1 on failure
     int compile_kernel(const std::string& msl_source,
@@ -48,11 +49,17 @@ public:
     void begin_frame();
     void dispatch(const DispatchParams& params);
     void blit_to_screen(int source_texture_id);
+    void copy_texture_to_buffer(int texture_id, int buffer_id,
+                                uint32_t x, uint32_t y, uint32_t w, uint32_t h,
+                                uint32_t bytes_per_pixel);
     void render_imgui();
     void end_frame();
 
     uint32_t drawable_width() const;
     uint32_t drawable_height() const;
+
+    // GPU execution time of the most recently completed frame, in ms
+    float gpu_frame_ms() const;
 
     // Type-erased Metal pointers (for external use if needed)
     void* raw_device() const;

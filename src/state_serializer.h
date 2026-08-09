@@ -1,25 +1,48 @@
 #pragma once
 #include "types.h"
-#include "gui.h"
 #include "shader_manager.h"
+#include <array>
 #include <string>
+#include <vector>
 
+// Persists registered app values + all shader params to a JSON file.
+// Register fields once before load(); save/load/change-detection all walk
+// the same table, so a registered field can never be half-persisted.
 class StateSerializer {
 public:
     StateSerializer(const std::string& file_path);
 
-    // Load state from disk. Applies values to camera and shader params.
+    // json_path is a JSON pointer, e.g. "/camera/pos" — nesting is created on save.
+    void float_field(const char* json_path, float* p);
+    void int_field(const char* json_path, int* p);
+    void bool_field(const char* json_path, bool* p);
+    void float3_field(const char* json_path, float* p);
+    // Saved as a string label; loaded by label lookup. *p indexes labels.
+    void enum_field(const char* json_path, int* p, std::vector<std::string> labels);
+
+    // Load state from disk into registered fields and shader params.
     // Missing keys are silently ignored (keeps defaults).
-    void load(Camera& camera, ShaderManager& shaders);
+    void load(ShaderManager& shaders);
 
     // Check if state changed; saves after 2s of no changes. Call once per frame.
-    void save_if_changed(const Camera& camera, const ShaderManager& shaders, float time);
+    void save_if_changed(const ShaderManager& shaders, float time);
+
+    // Unconditional save — call on shutdown so debounced changes aren't lost.
+    void save(const ShaderManager& shaders);
 
 private:
+    struct Field {
+        std::string path;
+        enum Type { Float, Int, Bool, Float3, Enum } type;
+        void* ptr;
+        std::vector<std::string> labels;
+    };
+
     std::string file_path_;
+    std::vector<Field> fields_;
 
     // Snapshot of last-compared state for change detection
-    Camera last_camera_;
+    std::vector<std::array<uint8_t, 16>> last_field_bytes_;
     std::vector<std::pair<std::string, std::vector<ShaderParam>>> last_shader_params_;
 
     // Debounce: save 2 seconds after the last change
@@ -27,7 +50,7 @@ private:
     float dirty_time_ = 0;
     static constexpr float debounce_seconds_ = 2.0f;
 
-    bool state_differs(const Camera& camera, const ShaderManager& shaders) const;
-    void save(const Camera& camera, const ShaderManager& shaders);
-    void snapshot(const Camera& camera, const ShaderManager& shaders);
+    std::array<uint8_t, 16> field_bytes(const Field& f) const;
+    bool state_differs(const ShaderManager& shaders) const;
+    void snapshot(const ShaderManager& shaders);
 };

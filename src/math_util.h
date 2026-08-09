@@ -102,6 +102,25 @@ inline bool invert(const float* m, float* out) {
 
 } // namespace mat4
 
+// Column-major 3x3, matching Metal float3x3 layout and rot_axis in common.metal
+namespace mat3 {
+
+inline void axis_rotation(const float* axis, float angle, float* out) {
+    float c = std::cos(angle), s = std::sin(angle), t = 1.0f - c;
+    float ax = axis[0], ay = axis[1], az = axis[2];
+    out[0] = t*ax*ax + c;    out[1] = t*ax*ay - s*az; out[2] = t*ax*az + s*ay;  // column 0
+    out[3] = t*ax*ay + s*az; out[4] = t*ay*ay + c;    out[5] = t*ay*az - s*ax;  // column 1
+    out[6] = t*ax*az - s*ay; out[7] = t*ay*az + s*ax; out[8] = t*az*az + c;     // column 2
+}
+
+inline void multiply(const float* a, const float* b, float* out) {
+    for (int j = 0; j < 3; j++)
+        for (int i = 0; i < 3; i++)
+            out[j*3+i] = a[0+i]*b[j*3+0] + a[3+i]*b[j*3+1] + a[6+i]*b[j*3+2];
+}
+
+} // namespace mat3
+
 // Minimal quaternion for trackball rotation (w, x, y, z)
 namespace quat {
 

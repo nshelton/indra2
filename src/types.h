@@ -24,7 +24,7 @@ struct alignas(16) FrameUniforms {
     float time;
     float delta_time;
     uint32_t frame_index;
-    uint32_t flags;            // bit 0: show_grid
+    uint32_t flags;            // bit 0: show_grid, bit 1: camera moved this frame
 
     float resolution[2];
     float inv_resolution[2];
@@ -51,12 +51,19 @@ struct alignas(16) FrameUniforms {
     float jitter[2];
     float _pad4[2];
 
+    // Per-iteration IFS rotation (column-major 3x3, one float4 per column),
+    // built once per frame from params[3] — the DE runs thousands of times
+    // per pixel and rebuilding it per call was ~40% of DE cost.
+    float rot_mtx[3][4];
+
     // Shader params: each param occupies one float4 regardless of actual size.
     float params[32][4];           // raymarch.metal params
     float recon_params[8][4];      // reconstruct.metal params
+    float pt_params[16][4];        // pathtrace.metal params
     uint32_t param_count;
     uint32_t recon_param_count;
-    uint32_t _pad5[2];
+    uint32_t pt_param_count;
+    uint32_t accum_frames;         // frames accumulated in history (0 = invalidated this frame)
 };
 
 // Texture descriptor for backend allocation

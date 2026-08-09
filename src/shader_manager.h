@@ -42,6 +42,7 @@ private:
     MetalBackend& backend_;
     std::string shader_dir_;
     std::vector<ShaderEntry> entries_;
+    uint64_t common_timestamp_ = 0;
 
     static const std::vector<ShaderParam> empty_params_;
     static const std::string empty_string_;
