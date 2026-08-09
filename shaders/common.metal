@@ -27,7 +27,7 @@ struct FrameUniforms {
     float2 jitter;
     float2 _pad4;
 
-    float4 rot_mtx[3];          // per-iteration IFS rotation, columns (from params[3])
+    float4 rot_mtx[3];          // per-iteration IFS rotation, columns (from params[2])
 
     float4 params[32];          // raymarch.metal params
     float4 recon_params[12];    // reconstruct.metal params
@@ -36,6 +36,9 @@ struct FrameUniforms {
     uint   recon_param_count;
     uint   pt_param_count;
     uint   accum_frames;        // frames accumulated in history (0 = invalidated this frame)
+
+    float4 post_params[8];      // present.metal params
+    uint   post_param_count;
 };
 
 // ---- SDF Primitives ----
@@ -81,22 +84,22 @@ void sphere_fold(thread float3& p, thread float& dr, float min_r2, float fixed_r
 }
 
 // ---- Scene DE (shared by raymarch + pathtrace) ----
-// Param slots (declared in raymarch.metal): [0] scale, [1] surface_color,
-// [2] offset, [3] rotation, [4] marchRatio, [5] fold_limit, [6] min_radius,
-// [7] box_dims, [8] levels, [9] lod_factor
+// Param slots (declared in raymarch.metal): [0] scale, [1] offset,
+// [2] rotation, [3] marchRatio, [4] fold_limit, [5] min_radius,
+// [6] box_dims, [7] levels ([8]+ continue below; [16] lod_factor, [17]+ material)
 float2 tglad(float3 z0, constant FrameUniforms& frame)
 {
-    int levels = int(frame.params[8].x);
+    int levels = int(frame.params[7].x);
     float s = frame.params[0].x;
-    float fold_limit = frame.params[5].x;
-    float min_r2 = frame.params[6].x;
-    float3 box_dims = frame.params[7].xyz;
+    float fold_limit = frame.params[4].x;
+    float min_r2 = frame.params[5].x;
+    float3 box_dims = frame.params[6].xyz;
 
-    float4 scale = float4(-s, -s, -s, s), p0 = frame.params[2].xyzz;
+    float4 scale = float4(-s, -s, -s, s), p0 = frame.params[1].xyzz;
     float4 z = float4(z0, 1.0);
     float orbit = 0;
 
-    // Per-iteration rotation, prebuilt on the CPU from params[3]
+    // Per-iteration rotation, prebuilt on the CPU from params[2]
     float3x3 rot = float3x3(frame.rot_mtx[0].xyz, frame.rot_mtx[1].xyz, frame.rot_mtx[2].xyz);
 
     for (int n = 0; n < levels; n++)
@@ -114,8 +117,138 @@ float2 tglad(float3 z0, constant FrameUniforms& frame)
     return float2(dS, orbit);
 }
 
+// Param slots continued: [8] fractal, [9] power, [10] csize, [11] ksize
+float2 mandelbulb(float3 pos, constant FrameUniforms& frame) {
+    int levels = int(frame.params[7].x);
+    float power = frame.params[9].x;
+
+    float3 z = pos;
+    float dr = 1.0;
+    float r = 0.0;
+    float orbit = 1e9;
+
+    for (int i = 0; i < levels; i++) {
+        r = length(z);
+        if (r > 2.0 || r < 1e-9) break;
+        orbit = min(orbit, r);
+
+        float theta = acos(z.z / r) * power;
+        float phi = atan2(z.y, z.x) * power;
+        dr = pow(r, power - 1.0) * power * dr + 1.0;
+
+        z = pow(r, power) * float3(sin(theta) * cos(phi),
+                                   sin(theta) * sin(phi),
+                                   cos(theta)) + pos;
+    }
+
+    return float2(0.5 * log(r) * r / dr, orbit);
+}
+
+float2 mandelbox(float3 pos, constant FrameUniforms& frame) {
+    int levels = int(frame.params[7].x);
+    float s = frame.params[0].x;
+    float fold_limit = frame.params[4].x;
+    float min_r2 = frame.params[5].x;
+
+    float3 z = pos;
+    float dr = 1.0;
+    float orbit = 1e9;
+
+    for (int i = 0; i < levels; i++) {
+        z = box_fold(z, fold_limit);
+        sphere_fold(z, dr, min_r2, 1.0);
+        z = s * z + pos;
+        dr = dr * abs(s) + 1.0;
+        orbit = min(orbit, length(z));
+    }
+
+    return float2(length(z) / abs(dr), orbit);
+}
+
+float2 menger(float3 pos, constant FrameUniforms& frame) {
+    int levels = int(frame.params[7].x);
+    float s = frame.params[0].x;
+    float3 off = frame.params[1].xyz;
+    float3x3 rot = float3x3(frame.rot_mtx[0].xyz, frame.rot_mtx[1].xyz, frame.rot_mtx[2].xyz);
+
+    float3 z = pos;
+    float dr = 1.0;
+    float orbit = 1e9;
+
+    for (int i = 0; i < levels; i++) {
+        z = abs(z);
+        if (z.x < z.y) z.xy = z.yx;
+        if (z.x < z.z) z.xz = z.zx;
+        if (z.y < z.z) z.yz = z.zy;
+        z = rot * z;
+        z = z * s - off * (s - 1.0);
+        if (z.z < -0.5 * off.z * (s - 1.0)) z.z += off.z * (s - 1.0);
+        dr *= abs(s);
+        orbit = min(orbit, length(z));
+    }
+
+    return float2(sd_box(z, float3(1.0)) / dr, orbit);
+}
+
+float2 pkleinian(float3 pos, constant FrameUniforms& frame) {
+    int levels = int(frame.params[7].x);
+    float3 csize = frame.params[10].xyz;
+    float ksize = frame.params[11].x;
+    float3 c = frame.params[1].xyz;
+
+    float3 p = pos;
+    float defactor = 1.0;
+    float orbit = 1e9;
+
+    for (int i = 0; i < levels; i++) {
+        p = 2.0 * clamp(p, -csize, csize) - p;
+        float r2 = dot(p, p);
+        float k = max(ksize / r2, 1.0);
+        p *= k;
+        defactor *= k;
+        p += c;
+        orbit = min(orbit, length(p));
+    }
+
+    return float2(0.5 * abs(p.z) / defactor, orbit);
+}
+
+// Minimal kaleidoscopic IFS — the skeleton every DE fractal here shares:
+// FOLD space so many regions map onto one, SCALE about a fixed point, repeat.
+// The result is self-similar because each iteration re-runs the same map on
+// an ever-smaller copy of space. dr tracks the total stretch so the distance
+// to the base shape (a unit box) can be converted back to world units.
+float2 simple(float3 pos, constant FrameUniforms& frame) {
+    int levels = int(frame.params[7].x);
+    float s = frame.params[0].x;
+    float3 off = frame.params[1].xyz;
+    float3 box_dims = frame.params[6].xyz;
+    float3x3 rot = float3x3(frame.rot_mtx[0].xyz, frame.rot_mtx[1].xyz, frame.rot_mtx[2].xyz);
+
+    float3 z = pos;
+    float dr = 1.0;
+    float orbit = 1e9;
+
+    for (int i = 0; i < levels; i++) {
+        z = abs(z);                   // fold: mirror all 8 octants into one
+        z = rot * z;                  // twist (identity when rotation = 0)
+        z = z * s - off * (s - 1.0);  // scale about the point `off`
+        dr *= abs(s);
+        orbit = min(orbit, length(z.xz));  // line trap: distance to the y axis
+    }
+
+    return float2(sd_box(z, box_dims) / dr, orbit);
+}
+
 float2 DE(float3 p, constant FrameUniforms& frame) {
-    return tglad(p, frame);
+    switch (int(frame.params[8].x)) {
+        case 1:  return mandelbulb(p, frame);
+        case 2:  return mandelbox(p, frame);
+        case 3:  return menger(p, frame);
+        case 4:  return pkleinian(p, frame);
+        case 5:  return simple(p, frame);
+        default: return tglad(p, frame);
+    }
 }
 
 float3 calc_normal(float3 p, float t, constant FrameUniforms& frame) {
@@ -138,6 +271,7 @@ constant float TRACE_MAX_DIST = 100.0;
 struct TraceResult {
     float t;      // >= TRACE_MAX_DIST on miss
     int steps;
+    float orbit;  // orbit trap from the last DE eval — the hit point's when t is a hit
 };
 
 // min_dist is relative to t (screen-space-ish). Secondary rays pass fewer
@@ -153,8 +287,9 @@ struct TraceResult {
 // preserves the classic march from the origin.
 TraceResult trace(float3 origin, float3 dir, constant FrameUniforms& frame,
                   int max_steps, float min_dist, float lod_scale, float t_start) {
-    float lod = frame.params[9].x * lod_scale;
+    float lod = frame.params[16].x * lod_scale;  // slot 16: lod_factor
     float t = t_start;
+    float orbit = 0;
     int i = 0;
     for (; i < max_steps; i++) {
         float3 p = origin + dir * t;
@@ -165,14 +300,16 @@ TraceResult trace(float3 origin, float3 dir, constant FrameUniforms& frame,
             break;
         }
         float2 d = DE(p, frame);
+        orbit = d.y;
         if (d.x < (min_dist + float(i) * lod) * t) break;
         if (t > TRACE_MAX_DIST) break;
-        t += d.x * frame.params[4].x;
+        t += d.x * frame.params[3].x;
     }
 
     TraceResult r;
     r.t = t;
     r.steps = i;
+    r.orbit = orbit;
     return r;
 }
 
@@ -195,6 +332,15 @@ uint2 stride_cell_pos(uint t, uint stride) {
 uint stride_cell_time(uint2 texel, uint stride) {
     uint c = (texel.y % stride) * stride + (texel.x % stride);
     return (c * stride_fill_inv(stride)) % (stride * stride);
+}
+// Per-block phase offset: without it every block traces the same cell each
+// frame and the fresh pixels form a screen-wide lattice. Hashing the block
+// coords desynchronizes the cycles so fresh pixels are spatially scattered.
+uint stride_block_phase(uint2 block, uint stride) {
+    uint h = block.x * 1664525u + block.y * 1013904223u;
+    h = (h ^ (h >> 16u)) * 0x45d9f3bu;
+    h = h ^ (h >> 16u);
+    return h % (stride * stride);
 }
 
 // ---- Primary-ray depth seeding (GPU Unchained [e], "bread crumbs") ----
@@ -223,6 +369,40 @@ float seed_primary_t(texture2d<float, access::read> prev_depth, uint2 half_pixel
     // cheaply via the escape bailout anyway.
     if (t_min >= TRACE_MAX_DIST) return 0.0;
     return max(t_min * 0.9, 0.0);
+}
+
+// ---- Orbit-driven material ----
+// One color source and one modulation wave, both functions of
+// t = orbit * orbit_scale[15]:
+//   palette = saturate(color_amp[12] * (1 + cos(2pi(color_freq[13]*t + color_phase[14]))))
+//     — fully procedural, peaks at 2*amp, troughs at black. It is the albedo,
+//     the metal tint, and the emission color.
+//   wave w = cos bands at mat_freq[17]/mat_phase[18] — roughness[19] and
+//     metallic[20] lerp across their float2 ranges by w; emission ignites at
+//     wave crests (width [22], gain [21]) in the local palette color.
+struct Material {
+    float3 albedo;
+    float  metallic;
+    float  roughness;
+    float3 emission;
+};
+
+Material orbit_material(float orbit, constant FrameUniforms& frame) {
+    float t = orbit * frame.params[15].x;
+    float3 palette = saturate(frame.params[12].xyz *
+        (1.0 + cos(6.2831853 * (frame.params[13].xyz * t + frame.params[14].xyz))));
+
+    float w = 0.5 + 0.5 * cos(6.2831853 * (frame.params[17].x * t + frame.params[18].x));
+
+    Material m;
+    m.albedo    = palette;
+    m.roughness = mix(frame.params[19].x, frame.params[19].y, w);
+    m.metallic  = mix(frame.params[20].x, frame.params[20].y, w);
+    // max() keeps smoothstep's edges apart at width 0 — degenerate edges are
+    // undefined and 0 * NaN would still poison the accumulator.
+    float glow  = smoothstep(1.0 - max(frame.params[22].x, 1e-3), 1.0, w);
+    m.emission  = palette * (frame.params[21].x * glow);
+    return m;
 }
 
 // ---- Subpixel sample offset, packed into color alpha ----

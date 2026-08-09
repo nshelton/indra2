@@ -30,6 +30,12 @@ public:
     // Unconditional save — call on shutdown so debounced changes aren't lost.
     void save(const ShaderManager& shaders);
 
+    // Presets: same full-state blob, arbitrary path. load_from does not
+    // snapshot, so the autosave sees the loaded state as a change and
+    // persists it to the main state file.
+    void save_to(const std::string& path, const ShaderManager& shaders);
+    bool load_from(const std::string& path, ShaderManager& shaders);
+
 private:
     struct Field {
         std::string path;

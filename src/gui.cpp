@@ -266,12 +266,19 @@ void Camera::move_keyboard(float dt) {
 
 // ---- ImGui helpers ----
 
+// ImGui sliders round the value to the display format's precision — with the
+// default "%.3f", any range smaller than ~0.01 snaps every position to the
+// same rounded value (lod_factor's 0..0.0002 was stuck at 0).
+static const char* slider_fmt(const ShaderParam& p) {
+    return (p.max_val[0] - p.min_val[0]) < 0.01f ? "%.6f" : "%.3f";
+}
+
 void render_shader_params(std::vector<ShaderParam>& params) {
     for (auto& p : params) {
         switch (p.type) {
             case ShaderParam::Float:
                 ImGui::SliderFloat(p.name.c_str(), &p.current_val[0],
-                                   p.min_val[0], p.max_val[0]);
+                                   p.min_val[0], p.max_val[0], slider_fmt(p));
                 break;
             case ShaderParam::Int: {
                 int v = (int)p.current_val[0];
@@ -281,16 +288,28 @@ void render_shader_params(std::vector<ShaderParam>& params) {
                 }
                 break;
             }
+            case ShaderParam::Enum: {
+                int v = std::clamp((int)p.current_val[0], 0, (int)p.labels.size() - 1);
+                if (ImGui::BeginCombo(p.name.c_str(), p.labels[v].c_str())) {
+                    for (int i = 0; i < (int)p.labels.size(); i++) {
+                        if (ImGui::Selectable(p.labels[i].c_str(), i == v)) {
+                            p.current_val[0] = (float)i;
+                        }
+                    }
+                    ImGui::EndCombo();
+                }
+                break;
+            }
             case ShaderParam::Float2:
                 ImGui::SliderFloat2(p.name.c_str(), p.current_val,
-                                    p.min_val[0], p.max_val[0]);
+                                    p.min_val[0], p.max_val[0], slider_fmt(p));
                 break;
             case ShaderParam::Float3:
                 if (p.is_color) {
                     ImGui::ColorEdit3(p.name.c_str(), p.current_val);
                 } else {
                     ImGui::SliderFloat3(p.name.c_str(), p.current_val,
-                                        p.min_val[0], p.max_val[0]);
+                                        p.min_val[0], p.max_val[0], slider_fmt(p));
                 }
                 break;
             case ShaderParam::Float4:
@@ -298,7 +317,7 @@ void render_shader_params(std::vector<ShaderParam>& params) {
                     ImGui::ColorEdit4(p.name.c_str(), p.current_val);
                 } else {
                     ImGui::SliderFloat4(p.name.c_str(), p.current_val,
-                                        p.min_val[0], p.max_val[0]);
+                                        p.min_val[0], p.max_val[0], slider_fmt(p));
                 }
                 break;
         }

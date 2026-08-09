@@ -6,7 +6,7 @@
 
 // Parsed from shader comment headers
 struct ShaderParam {
-    enum Type { Float, Int, Float2, Float3, Float4 };
+    enum Type { Float, Int, Float2, Float3, Float4, Enum };
 
     std::string name;
     Type type;
@@ -16,6 +16,7 @@ struct ShaderParam {
     float default_val[4] = {};
     float current_val[4] = {};
     int component_count  = 1;    // 1, 2, 3, or 4
+    std::vector<std::string> labels;  // Enum only — combo entries; current_val[0] is the index
 };
 
 // Packed uniform buffer uploaded to GPU each frame.
@@ -64,6 +65,11 @@ struct alignas(16) FrameUniforms {
     uint32_t recon_param_count;
     uint32_t pt_param_count;
     uint32_t accum_frames;         // frames accumulated in history (0 = invalidated this frame)
+
+    // Post params live after accum_frames, outside the params_changed memcmp
+    // span — grading tweaks must not reset accumulation.
+    float post_params[8][4];       // present.metal params
+    uint32_t post_param_count;
 };
 
 // Texture descriptor for backend allocation

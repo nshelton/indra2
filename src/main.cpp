@@ -8,8 +8,10 @@
 #include "math_util.h"
 #include "state_serializer.h"
 #include <algorithm>
+#include <cmath>
 #include <cstddef>
 #include <cstring>
+#include <filesystem>
 #include <vector>
 #include <iostream>
 #include <unistd.h>
@@ -108,6 +110,20 @@ int main(int argc, char* argv[]) {
     state.bool_field("/camera/adaptive_speed", &camera.adaptive_speed);
     state.enum_field("/renderer", &renderer_mode, {"raymarch", "pathtrace"});
     state.load(shaders);
+
+    // Preset store: one full-state JSON per file, name = filename
+    std::string preset_dir = std::string(SDL_GetBasePath()) + "presets/";
+    std::vector<std::string> presets;
+    auto refresh_presets = [&]() {
+        presets.clear();
+        std::error_code ec;
+        for (const auto& e : std::filesystem::directory_iterator(preset_dir, ec)) {
+            if (e.path().extension() == ".json") presets.push_back(e.path().stem().string());
+        }
+        std::sort(presets.begin(), presets.end());
+    };
+    std::filesystem::create_directories(preset_dir);
+    refresh_presets();
     camera.zoom_speed = std::clamp(camera.zoom_speed, 0.01f, 1.0f);
     camera.keyboard_speed = std::clamp(camera.keyboard_speed, 0.01f, 2.0f);
 
@@ -123,6 +139,7 @@ int main(int argc, char* argv[]) {
     int prev_renderer_mode = renderer_mode;
     uint32_t accum_frames = 0;
     uint32_t frames_since_move = 0;
+    uint32_t trace_index = 0;  // advances only on frames that actually trace
     FrameUniforms prev_uniforms = {};
 
     std::string exe_path = std::string(SDL_GetBasePath()) + "fractal-engine";
@@ -152,6 +169,16 @@ int main(int argc, char* argv[]) {
                 pick_y = event.button.y;
             }
             events.push_back(event);
+        }
+
+        // macOS 26 sometimes drops the button-up mid-drag (SDL #12218/#15967),
+        // leaving ImGui's slider stuck to the captured mouse. If the OS says
+        // the button is up but ImGui still thinks it's down, inject the release.
+        {
+            SDL_MouseButtonFlags held = SDL_GetGlobalMouseState(nullptr, nullptr);
+            ImGuiIO& io = ImGui::GetIO();
+            if (!(held & SDL_BUTTON_LMASK) && io.MouseDown[0]) io.AddMouseButtonEvent(0, false);
+            if (!(held & SDL_BUTTON_RMASK) && io.MouseDown[1]) io.AddMouseButtonEvent(1, false);
         }
 
         int win_w, win_h;
@@ -229,7 +256,6 @@ int main(int argc, char* argv[]) {
         FrameUniforms uniforms = {};
         uniforms.time = time;
         uniforms.delta_time = dt;
-        uniforms.frame_index = frame_index;
         uniforms.flags = camera.show_grid ? 1u : 0u;
         uniforms.resolution[0] = (float)w;
         uniforms.resolution[1] = (float)h;
@@ -263,10 +289,6 @@ int main(int argc, char* argv[]) {
         }
         std::memcpy(prev_vp, vp, sizeof(float) * 16);
 
-        // Jitter (Halton 2,3)
-        uniforms.jitter[0] = halton(frame_index, 2) - 0.5f;
-        uniforms.jitter[1] = halton(frame_index, 3) - 0.5f;
-
         // Pack raymarch params
         const auto& rm_params = shaders.get_params("raymarch.metal");
         uniforms.param_count = (uint32_t)rm_params.size();
@@ -274,13 +296,13 @@ int main(int argc, char* argv[]) {
             std::memcpy(uniforms.params[i], rm_params[i].current_val, sizeof(float) * 4);
         }
 
-        // Per-iteration IFS rotation, hoisted out of the DE (params[3] = rotation)
+        // Per-iteration IFS rotation, hoisted out of the DE (params[2] = rotation)
         {
             static const float X[3] = {1, 0, 0}, Y[3] = {0, 1, 0}, Z[3] = {0, 0, 1};
             float rx[9], ry[9], rz[9], rxy[9], rot[9];
-            mat3::axis_rotation(X, uniforms.params[3][0], rx);
-            mat3::axis_rotation(Y, uniforms.params[3][1], ry);
-            mat3::axis_rotation(Z, uniforms.params[3][2], rz);
+            mat3::axis_rotation(X, uniforms.params[2][0], rx);
+            mat3::axis_rotation(Y, uniforms.params[2][1], ry);
+            mat3::axis_rotation(Z, uniforms.params[2][2], rz);
             mat3::multiply(rx, ry, rxy);
             mat3::multiply(rxy, rz, rot);
             for (int col = 0; col < 3; col++) {
@@ -301,6 +323,13 @@ int main(int argc, char* argv[]) {
         uniforms.pt_param_count = (uint32_t)pt_params.size();
         for (int i = 0; i < (int)pt_params.size() && i < 16; i++) {
             std::memcpy(uniforms.pt_params[i], pt_params[i].current_val, sizeof(float) * 4);
+        }
+
+        // Pack present params
+        const auto& ps_params = shaders.get_params("present.metal");
+        uniforms.post_param_count = (uint32_t)ps_params.size();
+        for (int i = 0; i < (int)ps_params.size() && i < 8; i++) {
+            std::memcpy(uniforms.post_params[i], ps_params[i].current_val, sizeof(float) * 4);
         }
 
         // --- Accumulation counter ---
@@ -335,6 +364,21 @@ int main(int argc, char* argv[]) {
             accum_frames++;
         }
         uniforms.accum_frames = accum_frames;
+
+        // Sample clock: advances only on frames that actually trace, so the
+        // sparse round-robin keeps turning under the converged throttle. (A
+        // real frame counter stalls on whichever cell aligns with the skip
+        // interval, freezing the other texels' samples forever.)
+        uniforms.frame_index = trace_index;
+        if (!skip_sampling) trace_index++;
+
+        // R2 additive-recurrence jitter: any strided subsequence of an
+        // irrational rotation stays equidistributed, so texels traced every
+        // k*k-th sample still cover their full 2x2 quad. (Halton base 2
+        // subsampled at a power-of-two stride collapses to a narrow slice —
+        // visible aliasing at sample_stride 4.)
+        uniforms.jitter[0] = (float)std::fmod(uniforms.frame_index * 0.7548776662466927, 1.0) - 0.5f;
+        uniforms.jitter[1] = (float)std::fmod(uniforms.frame_index * 0.5698402909980532, 1.0) - 0.5f;
 
         // Sparse PT sampling: stride k traces 1 of k*k half-res pixels per
         // frame, round-robin. Keep the clamped TAA path (moving flag) until
@@ -422,25 +466,26 @@ int main(int argc, char* argv[]) {
             });
         }
 
-        // Pass 3: Present (full-res passthrough stub). Skipped on throttled
-        // frames — tex_output keeps the last rendered image for the blit.
+        // Only advance the ping-pong if reconstruct actually ran — otherwise
+        // (skipped frame or mid-edit compile error) present would read an
+        // unwritten texture next time.
+        if (rc_pipeline >= 0 && !skip_sampling) ping = !ping;
+
+        // Pass 3: Present (tonemap/grade). Runs every frame, even throttled
+        // ones, so grading sliders respond instantly; after the flip,
+        // ping ? a : b is the last history reconstruct actually wrote.
         int present_pipeline = shaders.get_pipeline("present_kernel");
-        if (present_pipeline >= 0 && !skip_sampling) {
+        if (present_pipeline >= 0) {
             backend.dispatch({
                 .pipeline_id = present_pipeline,
                 .grid_width = w,
                 .grid_height = h,
                 .threadgroup_w = 16,
                 .threadgroup_h = 16,
-                .textures = {history_write, tex_output},
+                .textures = {ping ? tex_history_a : tex_history_b, tex_output},
                 .buffers = {buf_u}
             });
         }
-
-        // Only advance the ping-pong if reconstruct actually ran — otherwise
-        // (skipped frame or mid-edit compile error) present would read an
-        // unwritten texture next time.
-        if (rc_pipeline >= 0 && !skip_sampling) ping = !ping;
 
         // Blit to screen
         backend.blit_to_screen(tex_output);
@@ -475,17 +520,24 @@ int main(int argc, char* argv[]) {
             static int ft_idx = 0;
             ft_buf[ft_idx] = dt * 1000.0f;
             ft_idx = (ft_idx + 1) % FT_SAMPLES;
+
+            // Smooth the readout text so it's legible; plots stay raw
+            static float ft_avg = 0, gpu_avg = 0;
+            float gpu_ms = backend.gpu_frame_ms();
+            if (ft_avg == 0) ft_avg = dt * 1000.0f;
+            ft_avg += (dt * 1000.0f - ft_avg) * 0.05f;
+            gpu_avg += (gpu_ms - gpu_avg) * 0.05f;
+
             char overlay[64];
-            snprintf(overlay, sizeof(overlay), "%.1f fps (%.2f ms)", 1.0f / dt, dt * 1000.0f);
+            snprintf(overlay, sizeof(overlay), "%.1f fps (%.2f ms)", 1000.0f / ft_avg, ft_avg);
             ImGui::PlotLines("##frametime", ft_buf, FT_SAMPLES, ft_idx, overlay,
                              0.0f, 33.3f, ImVec2(0, 40));
 
             static float gpu_buf[FT_SAMPLES] = {0};
             static int gpu_idx = 0;
-            float gpu_ms = backend.gpu_frame_ms();
             gpu_buf[gpu_idx] = gpu_ms;
             gpu_idx = (gpu_idx + 1) % FT_SAMPLES;
-            snprintf(overlay, sizeof(overlay), "GPU %.2f ms", gpu_ms);
+            snprintf(overlay, sizeof(overlay), "GPU %.2f ms", gpu_avg);
             ImGui::PlotLines("##gputime", gpu_buf, FT_SAMPLES, gpu_idx, overlay,
                              0.0f, 33.3f, ImVec2(0, 40));
         }
@@ -508,6 +560,10 @@ int main(int argc, char* argv[]) {
             if (ImGui::Combo("Mode", &mode_idx, mode_names, IM_ARRAYSIZE(mode_names))) {
                 camera.mode = (CameraMode)mode_idx;
             }
+            if (ImGui::Button("Reset Camera")) {
+                camera.pos[0] = 0; camera.pos[1] = 0; camera.pos[2] = 1;
+                camera.target[0] = 0; camera.target[1] = 0; camera.target[2] = 0;
+            }
             ImGui::Text("Pos:    %.2f, %.2f, %.2f", camera.pos[0], camera.pos[1], camera.pos[2]);
             ImGui::Text("Target: %.2f, %.2f, %.2f", camera.target[0], camera.target[1], camera.target[2]);
             ImGui::Text("Fwd:    %.3f, %.3f, %.3f", fwd[0], fwd[1], fwd[2]);
@@ -525,6 +581,45 @@ int main(int argc, char* argv[]) {
             ImGui::SliderFloat("Keyboard Speed", &camera.keyboard_speed, 0.01f, 2.0f, "%.3f", ImGuiSliderFlags_Logarithmic);
         }
 
+        if (ImGui::CollapsingHeader("Presets")) {
+            static char preset_name[64] = "";
+            ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - 60);
+            ImGui::InputTextWithHint("##preset_name", "preset name", preset_name, sizeof(preset_name));
+            ImGui::SameLine();
+            if (ImGui::Button("Save") && preset_name[0]) {
+                state.save_to(preset_dir + preset_name + ".json", shaders);
+                preset_name[0] = 0;
+                refresh_presets();
+            }
+
+            std::string pending_delete;
+            for (const auto& p : presets) {
+                ImGui::PushID(p.c_str());
+                if (ImGui::Button("Load")) {
+                    state.load_from(preset_dir + p + ".json", shaders);
+                }
+                ImGui::SameLine();
+                if (ImGui::Button("Update")) {
+                    state.save_to(preset_dir + p + ".json", shaders);
+                }
+                ImGui::SameLine();
+                if (ImGui::Button("X")) {
+                    if (ImGui::GetIO().KeyShift) pending_delete = p;
+                }
+                if (ImGui::IsItemHovered() && !ImGui::GetIO().KeyShift) {
+                    ImGui::SetTooltip("shift-click to delete");
+                }
+                ImGui::SameLine();
+                ImGui::TextUnformatted(p.c_str());
+                ImGui::PopID();
+            }
+            if (!pending_delete.empty()) {
+                std::error_code ec;
+                std::filesystem::remove(preset_dir + pending_delete + ".json", ec);
+                refresh_presets();
+            }
+        }
+
         if (ImGui::CollapsingHeader("Shader Parameters", ImGuiTreeNodeFlags_DefaultOpen)) {
             render_shader_params(shaders.get_params_mut("raymarch.metal"));
         }
@@ -533,6 +628,9 @@ int main(int argc, char* argv[]) {
         }
         if (ImGui::CollapsingHeader("Reconstruction", ImGuiTreeNodeFlags_DefaultOpen)) {
             render_shader_params(shaders.get_params_mut("reconstruct.metal"));
+        }
+        if (ImGui::CollapsingHeader("Post", ImGuiTreeNodeFlags_DefaultOpen)) {
+            render_shader_params(shaders.get_params_mut("present.metal"));
         }
         ImGui::End();
 

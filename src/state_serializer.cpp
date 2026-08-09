@@ -31,6 +31,10 @@ void StateSerializer::enum_field(const char* json_path, int* p, std::vector<std:
 // ---- Save ----
 
 void StateSerializer::save(const ShaderManager& shaders) {
+    save_to(file_path_, shaders);
+}
+
+void StateSerializer::save_to(const std::string& path, const ShaderManager& shaders) {
     json j;
 
     for (const auto& f : fields_) {
@@ -65,7 +69,7 @@ void StateSerializer::save(const ShaderManager& shaders) {
     j["shaders"] = shaders_j;
 
     // Write atomically: write to tmp, then rename
-    std::string tmp_path = file_path_ + ".tmp";
+    std::string tmp_path = path + ".tmp";
     std::ofstream f(tmp_path);
     if (!f.is_open()) {
         std::cerr << "[state] Failed to write " << tmp_path << "\n";
@@ -74,27 +78,29 @@ void StateSerializer::save(const ShaderManager& shaders) {
     f << j.dump(2) << "\n";
     f.close();
 
-    std::rename(tmp_path.c_str(), file_path_.c_str());
+    std::rename(tmp_path.c_str(), path.c_str());
 }
 
 // ---- Load ----
 
 void StateSerializer::load(ShaderManager& shaders) {
-    std::ifstream f(file_path_);
-    if (!f.is_open()) {
-        std::cout << "[state] No state file found, saving defaults\n";
+    if (!load_from(file_path_, shaders)) {
+        std::cout << "[state] No usable state file, saving defaults\n";
         save(shaders);
-        snapshot(shaders);
-        return;
     }
+    snapshot(shaders);
+}
+
+bool StateSerializer::load_from(const std::string& path, ShaderManager& shaders) {
+    std::ifstream f(path);
+    if (!f.is_open()) return false;
 
     json j;
     try {
         f >> j;
     } catch (const json::parse_error& e) {
-        std::cerr << "[state] Parse error: " << e.what() << "\n";
-        snapshot(shaders);
-        return;
+        std::cerr << "[state] Parse error in " << path << ": " << e.what() << "\n";
+        return false;
     }
 
     for (const auto& f : fields_) {
@@ -136,8 +142,8 @@ void StateSerializer::load(ShaderManager& shaders) {
         }
     }
 
-    std::cout << "[state] Loaded state from " << file_path_ << "\n";
-    snapshot(shaders);
+    std::cout << "[state] Loaded state from " << path << "\n";
+    return true;
 }
 
 // ---- Change detection ----

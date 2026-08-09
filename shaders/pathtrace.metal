@@ -44,7 +44,7 @@ kernel void pathtrace_kernel(
     // stride_cell_pos) so every texel refreshes each k*k frames without a
     // visible raster sweep. main.cpp shrinks the dispatch grid to match.
     uint stride = clamp(uint(frame.pt_params[4].x), 1u, 4u);
-    uint idx = frame.frame_index % (stride * stride);
+    uint idx = (frame.frame_index + stride_block_phase(gid, stride)) % (stride * stride);
     uint2 pixel = gid * stride + stride_cell_pos(idx, stride);
     if (pixel.x >= half_res.x || pixel.y >= half_res.y) return;
 
@@ -61,7 +61,6 @@ kernel void pathtrace_kernel(
     float depth = TRACE_MAX_DIST;
 
     int max_bounces = int(frame.pt_params[0].x);
-    float3 albedo = frame.params[1].xyz;
     float3 ro = ray.origin;
     float3 rd = ray.direction;
 
@@ -85,7 +84,9 @@ kernel void pathtrace_kernel(
         float3 p = ro + rd * tr.t;
         float3 n = calc_normal(p, tr.t, frame);
 
-        throughput *= albedo;
+        Material mat = orbit_material(tr.orbit, frame);
+        radiance += throughput * mat.emission;
+        throughput *= mat.albedo;
 
         // Russian roulette: kill dim paths unbiasedly instead of marching them
         if (bounce >= 2) {
@@ -94,7 +95,15 @@ kernel void pathtrace_kernel(
             throughput /= p_survive;
         }
 
-        rd = cosine_hemisphere(n, seed);
+        // Metallic picks a specular lobe: mirror direction pulled toward the
+        // diffuse sample by roughness^2. Not true GGX, but energy-plausible.
+        float3 diff = cosine_hemisphere(n, seed);
+        if (rand01(seed) < mat.metallic) {
+            float3 spec = normalize(mix(reflect(rd, n), diff, mat.roughness * mat.roughness));
+            rd = (dot(spec, n) > 0.0) ? spec : diff;
+        } else {
+            rd = diff;
+        }
         ro = p + n * (0.0003 * tr.t);
     }
 

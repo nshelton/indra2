@@ -38,7 +38,8 @@ kernel void reconstruct_kernel(
     if (moving) sigma *= frame.recon_params[8].x;
 
     // Sparse-sampling round-robin phase: texel cell (x%k, y%k) was last
-    // traced (phase - cell_index) mod k*k frames ago. Exact once the stride
+    // traced (block_phase - cell_index) mod k*k frames ago, where block_phase
+    // folds in the same per-block hash pathtrace uses. Exact once the stride
     // has been steady for a full cycle; transitions (reset, stride change)
     // self-heal within one refresh.
     uint stride = clamp(uint(frame.pt_params[4].x), 1u, 4u);
@@ -87,7 +88,8 @@ kernel void reconstruct_kernel(
             // order (stride_cell_time inverts pathtrace's stride_cell_pos).
             uint2  ut  = uint2(tap);
             uint   ci  = stride_cell_time(ut, stride);
-            uint   age = (phase + cells - ci) % cells;
+            uint   pb  = (phase + stride_block_phase(ut / stride, stride)) % cells;
+            uint   age = (pb + cells - ci) % cells;
             float  w_a = (moving && age > 0u) ? pow(stale_penalty, float(age)) : 1.0;
 
             float  w     = w_s * w_d * w_a;

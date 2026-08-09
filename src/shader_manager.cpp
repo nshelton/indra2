@@ -173,6 +173,15 @@ std::vector<ShaderParam> ShaderManager::parse_params(const std::string& source) 
             for (int i = 0; i < 3; i++) ls >> p.min_val[i];
             for (int i = 0; i < 3; i++) ls >> p.max_val[i];
             for (int i = 0; i < 3; i++) ls >> p.default_val[i];
+        } else if (type_str == "enum") {
+            p.type = ShaderParam::Enum;
+            p.component_count = 1;
+            std::string label;
+            while (ls >> label) p.labels.push_back(label);
+            if (p.labels.empty()) continue;
+            p.min_val[0] = 0;
+            p.max_val[0] = (float)(p.labels.size() - 1);
+            p.default_val[0] = 0;
         } else if (type_str == "float4" || type_str == "color4") {
             p.type = ShaderParam::Float4;
             p.component_count = 4;
