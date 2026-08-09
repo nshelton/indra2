@@ -58,7 +58,7 @@ struct alignas(16) FrameUniforms {
 
     // Shader params: each param occupies one float4 regardless of actual size.
     float params[32][4];           // raymarch.metal params
-    float recon_params[8][4];      // reconstruct.metal params
+    float recon_params[12][4];     // reconstruct.metal params
     float pt_params[16][4];        // pathtrace.metal params
     uint32_t param_count;
     uint32_t recon_param_count;

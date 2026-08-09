@@ -5,6 +5,8 @@
 // @param taa_clamp_scale    float 0.1 3.0 1.0
 // @param taa_depth_reject   float 0.01 1.0 0.1
 // @param taa_stale_penalty  float 0.0 1.0 0.25
+// @param taa_luma_feedback  float 0.0 1.0 0.5
+// @param motion_sigma_boost float 1.0 2.0 1.3
 
 kernel void reconstruct_kernel(
     texture2d<float, access::read>    current_color [[texture(0)]],  // half-res
@@ -27,8 +29,13 @@ kernel void reconstruct_kernel(
     float taa_clamp_scale = frame.recon_params[4].x;
     float depth_reject    = frame.recon_params[5].x;
     float stale_penalty   = frame.recon_params[6].x;
+    float luma_feedback   = frame.recon_params[7].x;
 
     bool moving = (frame.flags & 2u) != 0u;
+
+    // In motion the eye tracks spatial precision, not sharpness (GPU
+    // Unchained [a]) — widen the resolve kernel while moving, keep stills tight.
+    if (moving) sigma *= frame.recon_params[8].x;
 
     // Sparse-sampling round-robin phase: texel cell (x%k, y%k) was last
     // traced (phase - cell_index) mod k*k frames ago. Exact once the stride
@@ -65,15 +72,21 @@ kernel void reconstruct_kernel(
             float2 off   = (float2(tap) + s_off) - half_coord;
             float  w_s   = exp(-0.5 * dot(off, off) / (sigma * sigma));
 
+            // Depth affinity via the GPU Unchained [c] kernel,
+            // square(1 - |a-b| / max(a, b, minimum)): cheaper than exp and
+            // with finite support — taps beyond depth_sigma relative
+            // difference contribute exactly nothing.
             float  z     = current_depth.read(uint2(tap)).r;
-            float  z_rel = (z_ref > 1e-4) ? (abs(z - z_ref) / (z_ref * depth_sigma)) : 0.0;
-            float  w_d   = mix(1.0, exp(-z_rel), edge_aware);
+            float  z_rel = abs(z - z_ref) / (max(max(z, z_ref), 1e-4) * depth_sigma);
+            float  w_z   = 1.0 - min(z_rel, 1.0);
+            float  w_d   = mix(1.0, w_z * w_z, edge_aware);
 
             // During motion, stale taps show the scene from old camera
             // poses — down-weight them by age. When static they are valid
-            // samples and age is ignored.
+            // samples and age is ignored. Ages follow the dithered fill
+            // order (stride_cell_time inverts pathtrace's stride_cell_pos).
             uint2  ut  = uint2(tap);
-            uint   ci  = (ut.y % stride) * stride + (ut.x % stride);
+            uint   ci  = stride_cell_time(ut, stride);
             uint   age = (phase + cells - ci) % cells;
             float  w_a = (moving && age > 0u) ? pow(stale_penalty, float(age)) : 1.0;
 
@@ -185,6 +198,18 @@ kernel void reconstruct_kernel(
                     float4 ngb_lo     = ngb_center - ngb_half;
                     float4 ngb_hi     = ngb_center + ngb_half;
                     history_clamped   = clamp(history, ngb_lo, ngb_hi);
+
+                    // Soft temporal feedback (GPU Unchained [b]): also weight
+                    // history by reprojected luma difference, using the [c]
+                    // kernel square(1 - |a-b| / max(a, b, minimum)). Where
+                    // history and current disagree in luma even after the
+                    // clamp, alpha rises toward 1 — ghost energy fades
+                    // smoothly instead of only being boxed in.
+                    float l_h  = dot(history_clamped.xyz, float3(0.2126, 0.7152, 0.0722));
+                    float l_c  = dot(resolved_current.xyz, float3(0.2126, 0.7152, 0.0722));
+                    float diff = abs(l_h - l_c) / max(max(l_h, l_c), 0.05);
+                    float w_l  = 1.0 - min(diff, 1.0);
+                    alpha = mix(1.0, alpha, mix(1.0, w_l * w_l, luma_feedback));
                 }
             }
         }
