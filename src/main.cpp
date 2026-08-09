@@ -292,7 +292,7 @@ int main(int argc, char* argv[]) {
         // Pack reconstruct params
         const auto& rc_params = shaders.get_params("reconstruct.metal");
         uniforms.recon_param_count = (uint32_t)rc_params.size();
-        for (int i = 0; i < (int)rc_params.size() && i < 8; i++) {
+        for (int i = 0; i < (int)rc_params.size() && i < 12; i++) {
             std::memcpy(uniforms.recon_params[i], rc_params[i].current_val, sizeof(float) * 4);
         }
 
@@ -372,6 +372,14 @@ int main(int argc, char* argv[]) {
         // --- Render ---
         backend.begin_frame();
 
+        // Ping-pong selection is shared by pass 1 and pass 2: depth_read is
+        // last frame's reconstructed depth, which pathtrace uses to seed
+        // primary rays (bread crumbs) and reconstruct uses for disocclusion.
+        int history_read  = ping ? tex_history_a : tex_history_b;
+        int history_write = ping ? tex_history_b : tex_history_a;
+        int depth_read    = ping ? tex_recon_depth_a : tex_recon_depth_b;
+        int depth_write   = ping ? tex_recon_depth_b : tex_recon_depth_a;
+
         // Pass 1: Raymarch or path trace (half-res)
         int rm_pipeline = renderer_mode == 1 ? shaders.get_pipeline("pathtrace_kernel")
                                              : shaders.get_pipeline("raymarch_kernel");
@@ -382,7 +390,7 @@ int main(int argc, char* argv[]) {
                 .grid_height = (half_h + pt_stride - 1) / pt_stride,
                 .threadgroup_w = 16,
                 .threadgroup_h = 16,
-                .textures = {tex_current_color, tex_current_depth},
+                .textures = {tex_current_color, tex_current_depth, depth_read},
                 .buffers = {buf_u}
             });
         }
@@ -402,10 +410,6 @@ int main(int argc, char* argv[]) {
 
         // Pass 2: Reconstruct (full-res, half → full with joint-bilateral)
         int rc_pipeline = shaders.get_pipeline("reconstruct_kernel");
-        int history_read  = ping ? tex_history_a : tex_history_b;
-        int history_write = ping ? tex_history_b : tex_history_a;
-        int depth_read    = ping ? tex_recon_depth_a : tex_recon_depth_b;
-        int depth_write   = ping ? tex_recon_depth_b : tex_recon_depth_a;
         if (rc_pipeline >= 0 && !skip_sampling) {
             backend.dispatch({
                 .pipeline_id = rc_pipeline,

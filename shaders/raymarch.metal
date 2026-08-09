@@ -7,7 +7,11 @@
 // @param min_radius float 0.05 1.0 0.25
 // @param box_dims float3 0 0 0 3 60 3 1.0 50.0 1.4
 // @param levels int 1 10 6
+// @param lod_factor float 0.0 0.0002 0.00002
 
+// No depth seeding here (unlike pathtrace): this kernel's shading is the
+// step count itself, so seeded marches would brighten the image whenever
+// the camera stops. texture(2) is bound by the shared dispatch but unused.
 kernel void raymarch_kernel(
     texture2d<float, access::write>   out_color  [[texture(0)]],
     texture2d<float, access::write>   out_depth  [[texture(1)]],
@@ -22,7 +26,7 @@ kernel void raymarch_kernel(
     float2 full_pixel = (float2(gid) + 0.5) * 2.0 + frame.jitter * 2.0;
     Ray ray = make_camera_ray(full_pixel, frame);
 
-    TraceResult tr = trace(ray.origin, ray.direction, frame, 128, 0.0001);
+    TraceResult tr = trace(ray.origin, ray.direction, frame, 128, 0.0001, 1.0, 0.0);
 
     float3 color = float3(0.0);
     float depth = TRACE_MAX_DIST;

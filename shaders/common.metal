@@ -30,7 +30,7 @@ struct FrameUniforms {
     float4 rot_mtx[3];          // per-iteration IFS rotation, columns (from params[3])
 
     float4 params[32];          // raymarch.metal params
-    float4 recon_params[8];     // reconstruct.metal params
+    float4 recon_params[12];    // reconstruct.metal params
     float4 pt_params[16];       // pathtrace.metal params
     uint   param_count;
     uint   recon_param_count;
@@ -83,7 +83,7 @@ void sphere_fold(thread float3& p, thread float& dr, float min_r2, float fixed_r
 // ---- Scene DE (shared by raymarch + pathtrace) ----
 // Param slots (declared in raymarch.metal): [0] scale, [1] surface_color,
 // [2] offset, [3] rotation, [4] marchRatio, [5] fold_limit, [6] min_radius,
-// [7] box_dims, [8] levels
+// [7] box_dims, [8] levels, [9] lod_factor
 float2 tglad(float3 z0, constant FrameUniforms& frame)
 {
     int levels = int(frame.params[8].x);
@@ -142,9 +142,19 @@ struct TraceResult {
 
 // min_dist is relative to t (screen-space-ish). Secondary rays pass fewer
 // steps and a looser epsilon — diffuse GI doesn't need primary precision.
+//
+// LOD termination (GPU Unchained [c]): the acceptance radius grows with the
+// step count, so expensive rays (grazing angles, deep IFS interiors) hit a
+// slightly inflated surface early instead of burning the full step budget.
+// Caps worst-case cost per ray — trades a touch of blur for stable frame
+// time. lod_scale lets bounce rays use a coarser LOD than primaries.
+//
+// t_start seeds the march partway along the ray (see seed_primary_t); 0
+// preserves the classic march from the origin.
 TraceResult trace(float3 origin, float3 dir, constant FrameUniforms& frame,
-                  int max_steps, float min_dist) {
-    float t = 0;
+                  int max_steps, float min_dist, float lod_scale, float t_start) {
+    float lod = frame.params[9].x * lod_scale;
+    float t = t_start;
     int i = 0;
     for (; i < max_steps; i++) {
         float3 p = origin + dir * t;
@@ -155,7 +165,7 @@ TraceResult trace(float3 origin, float3 dir, constant FrameUniforms& frame,
             break;
         }
         float2 d = DE(p, frame);
-        if (d.x < min_dist * t) break;
+        if (d.x < (min_dist + float(i) * lod) * t) break;
         if (t > TRACE_MAX_DIST) break;
         t += d.x * frame.params[4].x;
     }
@@ -164,6 +174,55 @@ TraceResult trace(float3 origin, float3 dir, constant FrameUniforms& frame,
     r.t = t;
     r.steps = i;
     return r;
+}
+
+// ---- Sparse-stride fill ordering (GPU Unchained [e], "in the noise") ----
+// A raster visit order refreshes every k x k block in the same sweep, which
+// reads as a coherent scrolling front. Permuting the cycle with a multiplier
+// coprime to k*k dithers the order (diagonal for 2x2, corners-then-edges for
+// 3x3, bit-reversed-ish for 4x4) so holes are spatially scattered. Pathtrace
+// maps cycle time -> cell offset; reconstruct inverts it to age each texel.
+uint stride_fill_mult(uint stride) {
+    return stride == 2u ? 3u : (stride == 3u ? 2u : (stride == 4u ? 7u : 1u));
+}
+uint stride_fill_inv(uint stride) {  // modular inverse of stride_fill_mult
+    return stride == 2u ? 3u : (stride == 3u ? 5u : (stride == 4u ? 7u : 1u));
+}
+uint2 stride_cell_pos(uint t, uint stride) {
+    uint c = (t * stride_fill_mult(stride)) % (stride * stride);
+    return uint2(c % stride, c / stride);
+}
+uint stride_cell_time(uint2 texel, uint stride) {
+    uint c = (texel.y % stride) * stride + (texel.x % stride);
+    return (c * stride_fill_inv(stride)) % (stride * stride);
+}
+
+// ---- Primary-ray depth seeding (GPU Unchained [e], "bread crumbs") ----
+// When the camera is static, last frame's reconstructed depth at this pixel
+// is this ray's depth — start the march just short of it instead of at the
+// origin. Jitter moves the ray up to a full-res pixel per frame, so take the
+// conservative min over a 3x3 full-res neighborhood, then back off 10%.
+// "If data isn't ready, just compute it": any guard failing means a plain
+// march from zero, never a wait.
+float seed_primary_t(texture2d<float, access::read> prev_depth, uint2 half_pixel,
+                     constant FrameUniforms& frame) {
+    // accum_frames == 0 -> history (and the depth ping-pong) was invalidated
+    // this frame; moving flag -> prev depth is from a different camera pose.
+    if (frame.accum_frames == 0u || (frame.flags & 2u) != 0u) return 0.0;
+
+    int2 full_res = int2(prev_depth.get_width(), prev_depth.get_height());
+    int2 center   = int2(half_pixel) * 2 + 1;
+    float t_min = TRACE_MAX_DIST;
+    for (int dy = -1; dy <= 1; ++dy) {
+        for (int dx = -1; dx <= 1; ++dx) {
+            int2 q = clamp(center + int2(dx, dy), int2(0), full_res - 1);
+            t_min = min(t_min, prev_depth.read(uint2(q)).r);
+        }
+    }
+    // All-sky neighborhood: no surface to seed toward, and sky rays exit
+    // cheaply via the escape bailout anyway.
+    if (t_min >= TRACE_MAX_DIST) return 0.0;
+    return max(t_min * 0.9, 0.0);
 }
 
 // ---- Subpixel sample offset, packed into color alpha ----

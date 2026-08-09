@@ -33,17 +33,19 @@ float3 sky(float3 dir, constant FrameUniforms& frame) {
 kernel void pathtrace_kernel(
     texture2d<float, access::write>   out_color  [[texture(0)]],
     texture2d<float, access::write>   out_depth  [[texture(1)]],
+    texture2d<float, access::read>    prev_depth [[texture(2)]],  // full-res, last frame's reconstructed depth
     constant FrameUniforms&           frame      [[buffer(0)]],
     uint2                             gid        [[thread_position_in_grid]]
 ) {
     uint2 half_res = uint2(out_color.get_width(), out_color.get_height());
 
     // Sparse sampling: stride k traces 1 of k*k pixels per frame, cycling
-    // through the k x k block positions so every texel refreshes each k*k
-    // frames. main.cpp shrinks the dispatch grid to match.
+    // through the k x k block positions in a dithered fill order (see
+    // stride_cell_pos) so every texel refreshes each k*k frames without a
+    // visible raster sweep. main.cpp shrinks the dispatch grid to match.
     uint stride = clamp(uint(frame.pt_params[4].x), 1u, 4u);
     uint idx = frame.frame_index % (stride * stride);
-    uint2 pixel = gid * stride + uint2(idx % stride, idx / stride);
+    uint2 pixel = gid * stride + stride_cell_pos(idx, stride);
     if (pixel.x >= half_res.x || pixel.y >= half_res.y) return;
 
     uint seed = (pixel.x * 1973u + pixel.y * 9277u + frame.frame_index * 26699u) | 1u;
@@ -63,11 +65,15 @@ kernel void pathtrace_kernel(
     float3 ro = ray.origin;
     float3 rd = ray.direction;
 
+    // Bread crumbs: static camera lets primaries start just short of last
+    // frame's reconstructed depth instead of marching from the origin.
+    float t_seed = seed_primary_t(prev_depth, pixel, frame);
+
     for (int bounce = 0; bounce < max_bounces; bounce++) {
         // Bounce rays carry low-frequency diffuse GI — march them with a
-        // smaller step budget and looser epsilon than primaries.
-        TraceResult tr = (bounce == 0) ? trace(ro, rd, frame, 128, 0.0001)
-                                       : trace(ro, rd, frame, 64, 0.0006);
+        // smaller step budget, looser epsilon, and coarser LOD than primaries.
+        TraceResult tr = (bounce == 0) ? trace(ro, rd, frame, 128, 0.0001, 1.0, t_seed)
+                                       : trace(ro, rd, frame, 64, 0.0006, 4.0, 0.0);
 
         if (tr.t >= TRACE_MAX_DIST) {
             radiance += throughput * sky(rd, frame);
