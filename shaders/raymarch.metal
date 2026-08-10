@@ -1,15 +1,20 @@
-// @param scale float -4.0 4.0 3.0
-// @param offset float3 -5 -5 -5 5 5 5 0.9 0.6 0.3
-// @param rotation float3 -3.14 -3.14 -3.14 3.14 3.14 3.14 0.0 0.0 0.0
+// Param slot order is load-bearing: common.metal reads these by index, so
+// never reorder or insert — append only. The `@if` clause is display-only,
+// gating which sliders the GUI shows for the selected fractal (a hidden
+// param keeps its value and is still uploaded, just unread by that DE).
+//
+// @param scale float -4.0 4.0 3.0                                            @if fractal=tglad,mandelbox,menger,simple
+// @param offset float3 -5 -5 -5 5 5 5 0.9 0.6 0.3                            @if fractal=tglad,menger,pkleinian,simple
+// @param rotation float3 -3.14 -3.14 -3.14 3.14 3.14 3.14 0.0 0.0 0.0        @if fractal=tglad,menger,simple
 // @param marchRatio float 0.1 1.0 0.9
-// @param fold_limit float 0.1 2.0 1.0
-// @param min_radius float 0.05 1.0 0.25
-// @param box_dims float3 0 0 0 50 50 50 1.0 50.0 1.4
+// @param fold_limit float 0.1 2.0 1.0                                        @if fractal=tglad,mandelbox
+// @param min_radius float 0.05 1.0 0.25                                      @if fractal=tglad,mandelbox
+// @param box_dims float3 0 0 0 50 50 50 1.0 50.0 1.4                         @if fractal=tglad,simple
 // @param levels int 1 20 6
 // @param fractal enum tglad mandelbulb mandelbox menger pkleinian simple
-// @param power float 2 16 8
-// @param csize float3 0 0 0 2 2 2 0.9 0.9 0.9
-// @param ksize float 0.1 2.0 1.0
+// @param power float 2 16 8                                                  @if fractal=mandelbulb
+// @param csize float3 0 0 0 2 2 2 0.9 0.9 0.9                                @if fractal=pkleinian
+// @param ksize float 0.1 2.0 1.0                                             @if fractal=pkleinian
 // @param color_amp color3 0 0 0 1 1 1 0.5 0.5 0.5
 // @param color_freq float3 0 0 0 4 4 4 1.0 1.0 1.0
 // @param color_phase float3 0 0 0 1 1 1 0.0 0.33 0.67
@@ -17,8 +22,8 @@
 // @param lod_factor float 0.0 0.0002 0.00002
 // @param mat_freq float 0 8 2.0
 // @param mat_phase float 0 1 0.0
-// @param rough_range float2 0 0 1 1 0.15 0.7
-// @param metal_range float2 0 0 1 1 0.0 0.0
+// @param rough_range float2 0 0 1 1 0.15 0.7                                 @if renderer=pathtrace
+// @param metal_range float2 0 0 1 1 0.0 0.0                                  @if renderer=pathtrace
 // @param emission_gain float 0 20 0.0
 // @param emission_width float 0 1 0.15
 

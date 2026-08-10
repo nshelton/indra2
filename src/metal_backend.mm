@@ -21,6 +21,7 @@ struct MetalBackend::Impl {
     // Per-frame state
     id<CAMetalDrawable>         current_drawable;
     id<MTLCommandBuffer>        current_cmd_buffer;
+    id<MTLCommandBuffer>        last_cmd_buffer;   // retained for wait_last_frame
     MTLRenderPassDescriptor*    imgui_render_pass;
 
     // Resource pools
@@ -33,6 +34,12 @@ struct MetalBackend::Impl {
 
     // Written by the command buffer completed-handler (GPU-internal queue)
     std::atomic<double> gpu_ms{0.0};
+
+    // Throttles the CPU to MAX_FRAMES_IN_FLIGHT. Without it the CPU can lap
+    // the uniform ring and rewrite a slot the GPU is still reading — which
+    // interactively only perturbs a converging average, but makes an offline
+    // render irreproducible.
+    dispatch_semaphore_t frame_sem = nil;
 };
 
 // ---- Construction / destruction ----
@@ -47,6 +54,7 @@ bool MetalBackend::init(SDL_Window* window) {
     if (!impl->device) return false;
 
     impl->command_queue = [impl->device newCommandQueue];
+    impl->frame_sem = dispatch_semaphore_create(MAX_FRAMES_IN_FLIGHT);
 
     // Create Metal view and extract layer
     impl->metal_view = SDL_Metal_CreateView(window);
@@ -66,6 +74,18 @@ bool MetalBackend::init(SDL_Window* window) {
 }
 
 void MetalBackend::shutdown() {
+    // Drain the pipeline before releasing: libdispatch traps if a semaphore is
+    // destroyed while its count is below the value it was created with.
+    if (impl->frame_sem) {
+        for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
+            dispatch_semaphore_wait(impl->frame_sem, DISPATCH_TIME_FOREVER);
+        }
+        for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
+            dispatch_semaphore_signal(impl->frame_sem);
+        }
+        impl->frame_sem = nil;
+    }
+    impl->last_cmd_buffer = nil;
     if (impl->metal_view) {
         SDL_Metal_DestroyView(impl->metal_view);
         impl->metal_view = nullptr;
@@ -221,6 +241,9 @@ void MetalBackend::imgui_new_frame() {
 // ---- Frame lifecycle ----
 
 void MetalBackend::begin_frame() {
+    // Paired with the signal in end_frame's completed handler. Every path out
+    // of the frame must reach end_frame or this deadlocks.
+    if (impl->frame_sem) dispatch_semaphore_wait(impl->frame_sem, DISPATCH_TIME_FOREVER);
     impl->current_drawable = [impl->metal_layer nextDrawable];
     impl->current_cmd_buffer = [impl->command_queue commandBuffer];
 }
@@ -272,9 +295,11 @@ void MetalBackend::blit_to_screen(int source_texture_id) {
 
 void MetalBackend::copy_texture_to_buffer(int texture_id, int buffer_id,
                                           uint32_t x, uint32_t y, uint32_t w, uint32_t h,
-                                          uint32_t bytes_per_pixel) {
+                                          uint32_t bytes_per_pixel, uint32_t bytes_per_row) {
     if (texture_id < 0 || texture_id >= (int)impl->textures.size()) return;
     if (buffer_id < 0 || buffer_id >= (int)impl->buffers.size()) return;
+
+    uint32_t row = bytes_per_row ? bytes_per_row : w * bytes_per_pixel;
 
     id<MTLBlitCommandEncoder> blit = [impl->current_cmd_buffer blitCommandEncoder];
     [blit copyFromTexture:impl->textures[texture_id]
@@ -284,8 +309,8 @@ void MetalBackend::copy_texture_to_buffer(int texture_id, int buffer_id,
                sourceSize:MTLSizeMake(w, h, 1)
                  toBuffer:impl->buffers[buffer_id]
         destinationOffset:0
-   destinationBytesPerRow:w * bytes_per_pixel
- destinationBytesPerImage:w * h * bytes_per_pixel];
+   destinationBytesPerRow:row
+ destinationBytesPerImage:row * h];
     [blit endEncoding];
 }
 
@@ -306,12 +331,24 @@ void MetalBackend::end_frame() {
         [impl->current_cmd_buffer presentDrawable:impl->current_drawable];
     }
     Impl* imp = impl.get();
+    dispatch_semaphore_t sem = impl->frame_sem;
     [impl->current_cmd_buffer addCompletedHandler:^(id<MTLCommandBuffer> cb) {
         imp->gpu_ms.store((cb.GPUEndTime - cb.GPUStartTime) * 1000.0);
+        if (sem) dispatch_semaphore_signal(sem);
     }];
     [impl->current_cmd_buffer commit];
+    impl->last_cmd_buffer = impl->current_cmd_buffer;
     impl->current_drawable = nil;
     impl->current_cmd_buffer = nil;
+}
+
+void MetalBackend::wait_last_frame() {
+    if (!impl->last_cmd_buffer) return;
+    [impl->last_cmd_buffer waitUntilCompleted];
+}
+
+void MetalBackend::set_vsync(bool enabled) {
+    impl->metal_layer.displaySyncEnabled = enabled ? YES : NO;
 }
 
 // ---- Getters ----

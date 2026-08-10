@@ -8,16 +8,48 @@
 struct ShaderParam {
     enum Type { Float, Int, Float2, Float3, Float4, Enum };
 
+    // Visibility gate parsed from a trailing `@if <name>=<v1>,<v2>` clause.
+    // `name` is either another param in the same shader (an enum, matched
+    // against its current label) or a host-supplied context key such as
+    // `renderer`. `!=` inverts. Multiple clauses are ANDed.
+    struct Condition {
+        std::string name;
+        std::vector<std::string> values;
+        bool negate = false;
+    };
+
     std::string name;
     Type type;
     bool is_color = false;       // true for color3/color4 — renders as ColorEdit
+    // min/max are the LIVE slider range, which the range popup may widen past
+    // what the shader declared. Everything that draws a slider or a curve axis
+    // reads these, so an override propagates everywhere for free.
     float min_val[4]     = {};
     float max_val[4]     = {};
+    // The range as declared in the shader — the "Reset range" target, and the
+    // reference that makes "is this overridden?" a derived question.
+    float decl_min[4]    = {};
+    float decl_max[4]    = {};
     float default_val[4] = {};
     float current_val[4] = {};
     int component_count  = 1;    // 1, 2, 3, or 4
+    bool logarithmic     = false;  // ImGuiSliderFlags_Logarithmic
     std::vector<std::string> labels;  // Enum only — combo entries; current_val[0] is the index
+    std::vector<Condition> conditions;  // empty = always shown
 };
+
+// An enum's range is derived from its label list, and ColorEdit ignores range
+// entirely — neither is meaningfully overridable, so both are locked out of
+// the range UI, of serialization, and of the hot-reload merge.
+inline bool param_range_editable(const ShaderParam& p) {
+    return p.type != ShaderParam::Enum && !p.is_color;
+}
+
+// Derived, never stored: a stored bool could only go stale against min/max.
+inline bool has_range_override(const ShaderParam& p) {
+    return param_range_editable(p) &&
+           (p.min_val[0] != p.decl_min[0] || p.max_val[0] != p.decl_max[0] || p.logarithmic);
+}
 
 // Packed uniform buffer uploaded to GPU each frame.
 // This struct is mirrored exactly in Metal as `constant FrameUniforms& frame`.
@@ -25,7 +57,11 @@ struct alignas(16) FrameUniforms {
     float time;
     float delta_time;
     uint32_t frame_index;
-    uint32_t flags;            // bit 0: show_grid, bit 1: camera moved this frame
+    // bit 0: show_grid
+    // bit 1: camera moved this frame (clamped TAA path + no depth seeding)
+    // bit 2: offline render with an open shutter (no depth seeding, but the
+    //        unclamped accumulator stays on — it's what integrates the blur)
+    uint32_t flags;
 
     float resolution[2];
     float inv_resolution[2];

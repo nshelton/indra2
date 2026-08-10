@@ -1,4 +1,4 @@
-// @param filter_sigma       float 0.1 3.0 1.0
+// @param filter_sigma       float 0.1 3.0 0.5
 // @param filter_depth_sigma float 0.001 0.5 0.05
 // @param edge_aware         float 0.0 1.0 1.0
 // @param taa_alpha          float 0.0 1.0 0.1
@@ -21,6 +21,10 @@ kernel void reconstruct_kernel(
     uint2 full_res = uint2(history_out.get_width(), history_out.get_height());
     if (gid.x >= full_res.x || gid.y >= full_res.y) return;
 
+    // filter_sigma is in half-res texel units: one texel = 2 full-res pixels,
+    // so the default 0.5 is a 1-pixel Gaussian at output res. Below ~0.35 the
+    // 3x3 gather's grid-sum ripple bends the effective filter toward the 2px
+    // box of the sample footprint and per-frame noise rises.
     float sigma           = frame.recon_params[0].x;
     float depth_sigma     = frame.recon_params[1].x;
     float edge_aware      = frame.recon_params[2].x;
@@ -179,20 +183,29 @@ kernel void reconstruct_kernel(
                 if (abs(stored_t - expected_t) > depth_reject * expected_t) {
                     alpha = 1.0;
                 } else {
-                    // Manual bilinear fetch from history_in
-                    int2   i0       = int2(floor(prev_pix - 0.5));
-                    float2 f        = prev_pix - 0.5 - float2(i0);
-                    int2   c00      = clamp(i0 + int2(0, 0), int2(0), hw - 1);
-                    int2   c10      = clamp(i0 + int2(1, 0), int2(0), hw - 1);
-                    int2   c01      = clamp(i0 + int2(0, 1), int2(0), hw - 1);
-                    int2   c11      = clamp(i0 + int2(1, 1), int2(0), hw - 1);
-                    float4 h00      = history_in.read(uint2(c00));
-                    float4 h10      = history_in.read(uint2(c10));
-                    float4 h01      = history_in.read(uint2(c01));
-                    float4 h11      = history_in.read(uint2(c11));
-                    float4 h0       = mix(h00, h10, f.x);
-                    float4 h1       = mix(h01, h11, f.x);
-                    float4 history  = mix(h0, h1, f.y);
+                    // Catmull-Rom history fetch: bilinear resampling every
+                    // frame low-passes history and is the dominant TAA blur
+                    // source in motion. The cubic's negative lobes are safe on
+                    // a dense image — undershoot is floored at 0, overshoot is
+                    // bounded by the AABB clamp below. Weights sum to 1.
+                    int2   i0 = int2(floor(prev_pix - 0.5));
+                    float2 f  = prev_pix - 0.5 - float2(i0);
+                    float2 f2 = f * f;
+                    float2 f3 = f2 * f;
+                    float2 cw0 = -0.5 * f3 + f2 - 0.5 * f;
+                    float2 cw1 =  1.5 * f3 - 2.5 * f2 + 1.0;
+                    float2 cw2 = -1.5 * f3 + 2.0 * f2 + 0.5 * f;
+                    float2 cw3 =  0.5 * f3 - 0.5 * f2;
+                    float4 wx = float4(cw0.x, cw1.x, cw2.x, cw3.x);
+                    float4 wy = float4(cw0.y, cw1.y, cw2.y, cw3.y);
+                    float4 history = float4(0.0);
+                    for (int ty = 0; ty < 4; ++ty) {
+                        for (int tx = 0; tx < 4; ++tx) {
+                            int2 c = clamp(i0 + int2(tx - 1, ty - 1), int2(0), hw - 1);
+                            history += history_in.read(uint2(c)) * (wx[tx] * wy[ty]);
+                        }
+                    }
+                    history = max(history, float4(0.0));
 
                     // AABB clamp with padding
                     float4 ngb_center = 0.5 * (ngb_min + ngb_max);

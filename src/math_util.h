@@ -192,4 +192,54 @@ inline void mad(const float* a, const float* b, float s, float* out) {
     out[0] = a[0]+b[0]*s; out[1] = a[1]+b[1]*s; out[2] = a[2]+b[2]*s;
 }
 
+inline void lerp(const float* a, const float* b, float t, float* out) {
+    out[0] = a[0] + (b[0]-a[0])*t; out[1] = a[1] + (b[1]-a[1])*t; out[2] = a[2] + (b[2]-a[2])*t;
+}
+
+// Spherical interpolation of two unit vectors. Near-parallel (and near-
+// antiparallel, where the rotation plane is undefined) falls back to nlerp:
+// sin(theta) goes to zero in the denominator, and over a tiny arc the chord
+// and the arc are the same thing anyway.
+inline void slerp(const float* a, const float* b, float t, float* out) {
+    float d = dot(a, b);
+    d = d < -1.0f ? -1.0f : (d > 1.0f ? 1.0f : d);
+    if (d > 0.9995f || d < -0.9995f) {
+        lerp(a, b, t, out);
+        normalize(out, out);
+        return;
+    }
+    float theta = std::acos(d);
+    float s = std::sin(theta);
+    float wa = std::sin((1.0f - t) * theta) / s;
+    float wb = std::sin(t * theta) / s;
+    out[0] = a[0]*wa + b[0]*wb;
+    out[1] = a[1]*wa + b[1]*wb;
+    out[2] = a[2]*wa + b[2]*wb;
+    normalize(out, out);
+}
+
 } // namespace v3
+
+// ---- Scalar interpolation (animation curves) ----
+
+// Uniform (non-centripetal) Catmull-Rom through p1..p2, with p0/p3 as the
+// neighbouring keys. Endpoint segments duplicate their outer key, which makes
+// the curve start and end with zero-ish overshoot instead of flying off.
+inline float catmull_rom(float p0, float p1, float p2, float p3, float t) {
+    float t2 = t * t, t3 = t2 * t;
+    return 0.5f * ((2.0f*p1) +
+                   (-p0 + p2) * t +
+                   (2.0f*p0 - 5.0f*p1 + 4.0f*p2 - p3) * t2 +
+                   (-p0 + 3.0f*p1 - 3.0f*p2 + p3) * t3);
+}
+
+// Cubic Hermite. m0/m1 are tangents in value-units per second, dt is the
+// segment length in seconds, t is normalized 0..1 across it.
+inline float hermite(float v0, float v1, float m0, float m1, float dt, float t) {
+    float t2 = t * t, t3 = t2 * t;
+    float h00 =  2.0f*t3 - 3.0f*t2 + 1.0f;
+    float h10 =       t3 - 2.0f*t2 + t;
+    float h01 = -2.0f*t3 + 3.0f*t2;
+    float h11 =       t3 -      t2;
+    return h00*v0 + h10*(m0*dt) + h01*v1 + h11*(m1*dt);
+}

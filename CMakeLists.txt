@@ -55,6 +55,9 @@ add_executable(fractal-engine
     src/shader_manager.cpp
     src/gui.cpp
     src/state_serializer.cpp
+    src/timeline.cpp
+    src/timeline_ui.cpp
+    src/capture.mm
     ${IMGUI_SOURCES}
 )
 
@@ -72,6 +75,9 @@ target_link_libraries(fractal-engine PRIVATE
     "-framework QuartzCore"
     "-framework Cocoa"
     "-framework IOKit"
+    # PNG encoding for offline frame capture — system frameworks, no new deps
+    "-framework CoreGraphics"
+    "-framework ImageIO"
 )
 
 # Symlink shaders into build directory for hot-reload

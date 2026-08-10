@@ -72,10 +72,21 @@ void ShaderManager::reload_shader(ShaderEntry& entry) {
     // Preserve current_val from old params if names match
     for (auto& np : new_params) {
         for (const auto& op : entry.params) {
-            if (np.name == op.name && np.type == op.type) {
-                std::memcpy(np.current_val, op.current_val, sizeof(np.current_val));
-                break;
+            if (np.name != op.name || np.type != op.type) continue;
+            std::memcpy(np.current_val, op.current_val, sizeof(np.current_val));
+
+            // Carry a user's range override across the reload — but only while
+            // the declaration it was made against still says the same thing.
+            // Editing the `@param` line is how you'd expect to change a range,
+            // and a sticky override would silently swallow that edit.
+            bool decl_unchanged = np.decl_min[0] == op.decl_min[0] &&
+                                  np.decl_max[0] == op.decl_max[0];
+            if (has_range_override(op) && decl_unchanged) {
+                std::memcpy(np.min_val, op.min_val, sizeof(np.min_val));
+                std::memcpy(np.max_val, op.max_val, sizeof(np.max_val));
+                np.logarithmic = op.logarithmic;
             }
+            break;
         }
     }
     entry.params = std::move(new_params);
@@ -129,7 +140,43 @@ const std::string& ShaderManager::get_error(const std::string& filename) const {
 }
 
 // ---- Param parsing ----
-// Format: // @param <name> <type> <values...>
+// Format: // @param <name> <type> <values...> [@if <ctrl>=<v1>,<v2> ...]
+
+// Parses the trailing `@if` clauses. Each is `<name>=<v1>,<v2>` or
+// `<name>!=<v1>`; the `@if` marker may be its own token or glued to the
+// expression. Malformed clauses are dropped, which leaves the param visible.
+static void parse_conditions(const std::string& text,
+                             std::vector<ShaderParam::Condition>& out) {
+    std::istringstream ss(text);
+    std::string tok;
+    while (ss >> tok) {
+        if (tok.rfind("@if", 0) == 0) {
+            tok = tok.substr(3);
+            if (tok.empty() && !(ss >> tok)) break;
+        }
+
+        size_t eq = tok.find('=');
+        if (eq == std::string::npos) continue;
+
+        ShaderParam::Condition c;
+        size_t name_end = eq;
+        if (name_end > 0 && tok[name_end - 1] == '!') {
+            c.negate = true;
+            name_end--;
+        }
+        c.name = tok.substr(0, name_end);
+
+        std::string vals = tok.substr(eq + 1);
+        for (size_t start = 0; start <= vals.size(); ) {
+            size_t comma = vals.find(',', start);
+            if (comma == std::string::npos) comma = vals.size();
+            if (comma > start) c.values.push_back(vals.substr(start, comma - start));
+            start = comma + 1;
+        }
+
+        if (!c.name.empty() && !c.values.empty()) out.push_back(std::move(c));
+    }
+}
 
 std::vector<ShaderParam> ShaderManager::parse_params(const std::string& source) {
     std::vector<ShaderParam> params;
@@ -142,9 +189,17 @@ std::vector<ShaderParam> ShaderManager::parse_params(const std::string& source) 
         if (pos == std::string::npos) continue;
 
         std::string rest = line.substr(pos + 9); // skip "// @param"
-        std::istringstream ls(rest);
 
+        // Split the visibility clause off first — enum eats every remaining
+        // token as a label, so `@if` has to be gone before values are read.
         ShaderParam p;
+        size_t if_pos = rest.find("@if");
+        if (if_pos != std::string::npos) {
+            parse_conditions(rest.substr(if_pos), p.conditions);
+            rest.resize(if_pos);
+        }
+
+        std::istringstream ls(rest);
         std::string type_str;
         ls >> p.name >> type_str;
 
@@ -195,6 +250,11 @@ std::vector<ShaderParam> ShaderManager::parse_params(const std::string& source) 
 
         // Initialize current_val to default
         std::memcpy(p.current_val, p.default_val, sizeof(p.current_val));
+
+        // The parsed range is both the live range and the declared reference
+        // the range popup resets to.
+        std::memcpy(p.decl_min, p.min_val, sizeof(p.decl_min));
+        std::memcpy(p.decl_max, p.max_val, sizeof(p.decl_max));
 
         params.push_back(std::move(p));
     }

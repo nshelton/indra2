@@ -353,8 +353,10 @@ uint stride_block_phase(uint2 block, uint stride) {
 float seed_primary_t(texture2d<float, access::read> prev_depth, uint2 half_pixel,
                      constant FrameUniforms& frame) {
     // accum_frames == 0 -> history (and the depth ping-pong) was invalidated
-    // this frame; moving flag -> prev depth is from a different camera pose.
-    if (frame.accum_frames == 0u || (frame.flags & 2u) != 0u) return 0.0;
+    // this frame; moving flag (bit 1) -> prev depth is from a different camera
+    // pose; offline shutter (bit 2) -> the camera moves between accumulation
+    // samples, and the surface can close in by more than the 10% back-off.
+    if (frame.accum_frames == 0u || (frame.flags & 6u) != 0u) return 0.0;
 
     int2 full_res = int2(prev_depth.get_width(), prev_depth.get_height());
     int2 center   = int2(half_pixel) * 2 + 1;

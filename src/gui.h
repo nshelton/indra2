@@ -2,6 +2,8 @@
 #include "types.h"
 #include "shader_manager.h"
 #include <SDL3/SDL.h>
+#include <string>
+#include <utility>
 #include <vector>
 
 enum class CameraMode { Trackball, FPS };
@@ -53,5 +55,27 @@ private:
 };
 
 // ImGui helpers
-void render_shader_params(std::vector<ShaderParam>& params);
+
+// Host-side values a param's `@if` clause can test by name, for state the
+// shader can't see (e.g. {"renderer", "pathtrace"}).
+using ParamContext = std::vector<std::pair<std::string, std::string>>;
+
+struct Timeline;  // timeline.h — forward declared to keep the include one-way
+
+// Passing `tl` + `shader_file` turns every param in the list into an
+// animatable one: right-click for keying, animated params are tinted, and
+// drags feed auto-key. Because every `@param` in the engine flows through this
+// one function, that covers params that don't exist yet.
+// Compact layout: sliders span the full panel width and the param name is
+// painted over the bar instead of sitting beside it. ImGui's default puts the
+// label to the right of every widget, which on a 23-param panel costs more
+// horizontal space than the sliders themselves.
+extern bool g_compact_param_labels;
+
+// Neutralises the dark theme's blue slider track and grab to gray. Call once
+// after ImGui::StyleColorsDark().
+void apply_gui_style();
+
+void render_shader_params(std::vector<ShaderParam>& params, const ParamContext& ctx = {},
+                          Timeline* tl = nullptr, const char* shader_file = nullptr);
 void render_shader_errors(const ShaderManager& sm);

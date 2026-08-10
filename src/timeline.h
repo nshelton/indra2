@@ -1,0 +1,138 @@
+#pragma once
+#include "types.h"
+#include "gui.h"
+// Forward-declaration header only — keeps the full nlohmann include out of
+// everything that touches a Timeline.
+#include <nlohmann/json_fwd.hpp>
+#include <string>
+#include <vector>
+
+class ShaderManager;
+
+// ---- Animation data model ----
+//
+// Every tunable in the engine is already a named ShaderParam holding a
+// float[4] (types.h), so a timeline needs no reflection layer: a track is
+// keyed by (shader filename, param name, component). Never by slot index —
+// slots shift when a `@param` line is inserted mid-list, and state.json keys
+// on name for exactly the same reason.
+
+enum class Interp : int { Step = 0, Linear = 1, Smooth = 2, Bezier = 3 };
+
+const char* interp_name(Interp i);
+
+struct Key {
+    float  t = 0.0f;
+    float  v = 0.0f;
+    Interp interp = Interp::Smooth;
+    float  in_tan = 0.0f, out_tan = 0.0f;  // Bezier only, value-units per second
+};
+
+// One scalar channel. A float3 param owns three of these.
+struct Track {
+    std::string shader;      // "raymarch.metal" | "pathtrace.metal" | ...
+    std::string param;       // ShaderParam::name
+    int  component = 0;      // 0..3
+    bool enabled = true;
+    std::vector<Key> keys;   // kept sorted by t
+
+    float eval(float t) const;
+    // Insert or replace a key. `merge_window` is how close in time counts as
+    // the same key (callers pass half a frame). Returns the key's index.
+    int   insert(float t, float v, float merge_window, Interp interp = Interp::Smooth);
+    void  erase_at(int index);
+};
+
+// The camera is one row, not eight tracks: slerp and log-distance lerp are
+// joint operations across components and can't be decomposed into independent
+// scalar curves.
+struct CameraKey {
+    float  t = 0.0f;
+    float  target[3] = {0, 0, 0};
+    float  dir[3]    = {0, 0, 1};  // normalize(pos - target)
+    float  log_dist  = 0.0f;       // log(|pos - target|)
+    float  fov       = 1.2f;
+    Interp interp    = Interp::Smooth;
+};
+
+struct Timeline {
+    // Master switch. Off means fully inert, not just hidden: apply() does
+    // nothing, the camera stays manual, and the param sliders lose their
+    // keying affordances. Keys are preserved, so it is a safe thing to flip
+    // while noodling. Persisted in state.json, not in the .anim.json.
+    bool  enabled = true;
+
+    float duration = 10.0f;
+    float fps      = 30.0f;
+    float playhead = 0.0f;
+    bool  playing      = false;
+    bool  loop         = true;
+    bool  auto_key     = false;
+    bool  drive_camera = true;
+
+    std::vector<Track>     tracks;
+    std::vector<CameraKey> cam_keys;
+
+    // Bumped by every mutation; the autosave compares against what it last
+    // wrote instead of memcmp'ing a variable-length structure.
+    uint64_t revision = 0;
+
+    // Set by the param UI while a slider is held. apply() leaves that channel
+    // alone next frame, otherwise the curve stomps the drag before the user
+    // ever sees it move. Cleared by the host each frame before drawing the UI.
+    std::string editing_shader, editing_param;
+
+    // --- Queries ---
+    const Track* find(const std::string& shader, const std::string& param, int comp) const;
+    Track*       find(const std::string& shader, const std::string& param, int comp);
+    bool         has_track(const std::string& shader, const std::string& param) const;
+    bool         camera_driven() const { return enabled && drive_camera && !cam_keys.empty(); }
+    float        frame_time() const { return fps > 0.0f ? 1.0f / fps : 1.0f / 30.0f; }
+
+    // --- Mutation ---
+    Track& get_or_create(const std::string& shader, const ShaderParam& p, int comp);
+    void   key_param(float t, const std::string& shader, const ShaderParam& p);
+    void   remove_param(const std::string& shader, const std::string& param);
+    void   key_camera(float t, const Camera& cam);
+    void   remove_camera_key(int index);
+    void   clear();
+
+    // --- Evaluation ---
+    // Writes into ShaderParam::current_val and Camera, so every downstream
+    // system (sliders, the params_changed memcmp, serialization) sees animated
+    // values through the paths it already uses.
+    void   apply(float t, ShaderManager& shaders, Camera& cam) const;
+    void   eval_camera(float t, Camera& cam) const;
+
+    // --- Serialization ---
+    // to_json/from_json are the reusable value: the same block is written
+    // standalone into animations/ and embedded under "timeline" in a preset.
+    // `enabled` is never part of it — see the field's comment.
+    void to_json(nlohmann::json& j) const;
+    void from_json(const nlohmann::json& j);
+    bool save(const std::string& path) const;
+    bool load(const std::string& path);
+};
+
+// ---- Timeline editor UI state ----
+// Lives across frames; owned by main.cpp and passed into draw_timeline.
+struct TimelineUI {
+    float view_start = 0.0f;     // visible time range (zoom/pan)
+    float view_end   = 10.0f;
+    bool  show_curves = false;
+
+    // Selection: either a camera key (sel_camera) or a key in tracks[sel_track].
+    bool  sel_camera = false;
+    int   sel_track  = -1;
+    int   sel_key    = -1;
+
+    // Groups expanded to their per-component rows, keyed "shader|param".
+    std::vector<std::string> expanded;
+
+    bool is_expanded(const std::string& key) const;
+    void toggle_expanded(const std::string& key);
+};
+
+// The dope sheet, transport and curve editor. Contents only — the caller owns
+// the ImGui::Begin/End so the window can be docked or embedded.
+void draw_timeline(Timeline& tl, TimelineUI& ui, ShaderManager& shaders, Camera& cam);

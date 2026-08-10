@@ -8,6 +8,11 @@ struct SDL_Window;
 
 class MetalBackend {
 public:
+    // Depth of the CPU->GPU pipeline. Per-frame resources (the uniform ring)
+    // must have this many slots, and begin_frame blocks once this many frames
+    // are in flight so slot n never gets overwritten while the GPU reads it.
+    static constexpr int MAX_FRAMES_IN_FLIGHT = 3;
+
     MetalBackend();
     ~MetalBackend();
 
@@ -49,11 +54,22 @@ public:
     void begin_frame();
     void dispatch(const DispatchParams& params);
     void blit_to_screen(int source_texture_id);
+    // bytes_per_row = 0 uses the tightly packed w * bytes_per_pixel. Full-frame
+    // readbacks must pass a 256-byte-aligned stride: texture->buffer blits
+    // require it, and only the small patch readbacks happen to satisfy it by
+    // accident.
     void copy_texture_to_buffer(int texture_id, int buffer_id,
                                 uint32_t x, uint32_t y, uint32_t w, uint32_t h,
-                                uint32_t bytes_per_pixel);
+                                uint32_t bytes_per_pixel, uint32_t bytes_per_row = 0);
     void render_imgui();
     void end_frame();
+
+    // Block until the last committed frame has finished on the GPU. Only for
+    // offline capture, where determinism beats throughput.
+    void wait_last_frame();
+
+    // Display sync on the CAMetalLayer. Off lets an offline render run flat out.
+    void set_vsync(bool enabled);
 
     uint32_t drawable_width() const;
     uint32_t drawable_height() const;
