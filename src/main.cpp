@@ -11,6 +11,7 @@
 #include "render_job.h"
 #include "capture.h"
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <cstddef>
 #include <cstring>
@@ -35,6 +36,18 @@ static const char* preset_popup_title(PendingPreset::Kind k) {
         case PendingPreset::Update: return "Overwrite preset?";
         case PendingPreset::Delete: return "Delete preset?";
         default:                    return "";
+    }
+}
+
+// SDL's folder dialog delivers its result on an arbitrary thread; hand it to
+// the UI thread through a release/acquire flag. filelist[0] is the picked
+// path; null filelist (error) or empty list (cancel) leave everything as-is.
+static char s_picked_dir[256];
+static std::atomic<bool> s_picked_ready{false};
+static void on_render_dir_picked(void*, const char* const* filelist, int) {
+    if (filelist && filelist[0]) {
+        SDL_strlcpy(s_picked_dir, filelist[0], sizeof(s_picked_dir));
+        s_picked_ready.store(true, std::memory_order_release);
     }
 }
 
@@ -1145,9 +1158,19 @@ int main(int argc, char* argv[]) {
             if (out_dir[0] == 0) {
                 std::snprintf(out_dir, sizeof(out_dir), "%srenders/", SDL_GetBasePath());
             }
+            if (s_picked_ready.load(std::memory_order_acquire)) {
+                std::snprintf(out_dir, sizeof(out_dir), "%s/", s_picked_dir);
+                s_picked_ready.store(false, std::memory_order_relaxed);
+            }
             ImGui::BeginDisabled(job.active);
-            ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x);
+            ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - 40);
             ImGui::InputTextWithHint("##outdir", "output directory", out_dir, sizeof(out_dir));
+            ImGui::SameLine();
+            if (ImGui::Button("...", ImVec2(32, 0))) {
+                SDL_ShowOpenFolderDialog(on_render_dir_picked, nullptr, window,
+                                         out_dir[0] ? out_dir : nullptr, false);
+            }
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Choose the render output folder");
 
             static int range[2] = {0, -1};
             if (range[1] < 0) range[1] = (int)std::lround(timeline.duration * timeline.fps);
@@ -1175,6 +1198,13 @@ int main(int argc, char* argv[]) {
                         std::cerr << "[render] cannot create " << job.dir << ": "
                                   << ec.message() << "\n";
                     } else {
+                        // Provenance beside the frames: the exact state and
+                        // animation this render came from. state.json is a
+                        // loadable preset (timeline embedded); animation.json
+                        // imports from the animations library.
+                        state.save_to(job.dir + "state.json", shaders, &timeline);
+                        timeline.save(job.dir + "animation.json");
+
                         job.frame_first = std::min(range[0], range[1]);
                         job.frame_last  = std::max(range[0], range[1]);
                         job.frame = job.frame_first;
