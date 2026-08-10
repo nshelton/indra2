@@ -796,8 +796,11 @@ int main(int argc, char* argv[]) {
 
             // Per-pass GPU breakdown (stage-boundary timestamps). Smoothed
             // like the totals; keyed by label so a pass that skips a frame
-            // (sample throttle) just holds its last value. The remainder to
-            // the GPU total is the unsampled work: blits + ImGui.
+            // (sample throttle) just holds its last value. gpu_frame_ms is
+            // the command buffer's wall span on the GPU, which under vsync
+            // includes stalling for the compositor to release a drawable —
+            // encoder timestamps don't. The remainder is therefore idle
+            // wait (plus the unsampled tiny readback blits), not work.
             static std::vector<std::pair<std::string, float>> pass_avg;
             double pass_sum = 0.0;
             for (const auto& [label, ms] : backend.gpu_pass_ms()) {
@@ -811,7 +814,7 @@ int main(int argc, char* argv[]) {
             if (pass_sum > 0.0) {
                 static float other_avg = 0;
                 other_avg += ((float)(gpu_ms - pass_sum) - other_avg) * 0.05f;
-                ImGui::Text("  %-11s %5.2f ms", "blit+ui", std::max(other_avg, 0.0f));
+                ImGui::Text("  %-11s %5.2f ms", "idle/vsync", std::max(other_avg, 0.0f));
             }
         }
         ImGui::Text("Resolution: %u x %u", w, h);

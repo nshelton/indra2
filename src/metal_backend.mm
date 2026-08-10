@@ -325,7 +325,23 @@ void MetalBackend::blit_to_screen(int source_texture_id) {
     if (source_texture_id < 0 || source_texture_id >= (int)impl->textures.size()) return;
     if (!impl->current_drawable) return;
 
-    id<MTLBlitCommandEncoder> blit = [impl->current_cmd_buffer blitCommandEncoder];
+    // Sampled like the compute passes. Encoder timestamps start when the
+    // encoder executes — after the wait for the compositor to release the
+    // drawable — so this measures the copy itself, and the vsync stall
+    // stays out of every measured bucket (it's the frame-total remainder).
+    id<MTLBlitCommandEncoder> blit;
+    if (impl->ts_supported && impl->ts_cursor + 2 <= Impl::TS_MAX_SAMPLES) {
+        MTLBlitPassDescriptor* pd = [MTLBlitPassDescriptor blitPassDescriptor];
+        MTLBlitPassSampleBufferAttachmentDescriptor* att = pd.sampleBufferAttachments[0];
+        att.sampleBuffer = impl->ts_buffers[impl->ts_slot];
+        att.startOfEncoderSampleIndex = impl->ts_cursor;
+        att.endOfEncoderSampleIndex = impl->ts_cursor + 1;
+        impl->ts_cursor += 2;
+        impl->ts_labels.push_back("blit");
+        blit = [impl->current_cmd_buffer blitCommandEncoderWithDescriptor:pd];
+    } else {
+        blit = [impl->current_cmd_buffer blitCommandEncoder];
+    }
 
     id<MTLTexture> src = impl->textures[source_texture_id];
     id<MTLTexture> dst = impl->current_drawable.texture;
@@ -372,6 +388,19 @@ void MetalBackend::render_imgui() {
     if (!impl->current_drawable) return;
 
     impl->imgui_render_pass.colorAttachments[0].texture = impl->current_drawable.texture;
+
+    // Render passes sample vertex-start .. fragment-end. The descriptor is
+    // reused across frames, so the attachment is rewritten every time —
+    // sample buffer and indices both go stale after a frame.
+    if (impl->ts_supported && impl->ts_cursor + 2 <= Impl::TS_MAX_SAMPLES) {
+        MTLRenderPassSampleBufferAttachmentDescriptor* att =
+            impl->imgui_render_pass.sampleBufferAttachments[0];
+        att.sampleBuffer = impl->ts_buffers[impl->ts_slot];
+        att.startOfVertexSampleIndex = impl->ts_cursor;
+        att.endOfFragmentSampleIndex = impl->ts_cursor + 1;
+        impl->ts_cursor += 2;
+        impl->ts_labels.push_back("imgui");
+    }
 
     id<MTLRenderCommandEncoder> enc = [impl->current_cmd_buffer renderCommandEncoderWithDescriptor:impl->imgui_render_pass];
 

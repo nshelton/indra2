@@ -454,12 +454,18 @@ void draw_timeline(Timeline& tl, TimelineUI& ui, ShaderManager& shaders, Camera&
                 ImGui::TextDisabled("%s @ %.3fs", row.param.c_str(), times[k]);
                 ImGui::Separator();
                 Interp mode = Interp::Smooth;
+                bool mode_found = false;
                 for (const auto& tr : tl.tracks) {
                     if (tr.shader != row.shader || tr.param != row.param) continue;
+                    if (row.kind == Row::Component && tr.component != row.component) continue;
                     for (const auto& key : tr.keys) {
-                        if (std::fabs(key.t - times[k]) < ft * 0.25f) { mode = key.interp; break; }
+                        if (std::fabs(key.t - times[k]) < ft * 0.25f) {
+                            mode = key.interp;
+                            mode_found = true;
+                            break;
+                        }
                     }
-                    break;
+                    if (mode_found) break;
                 }
                 if (interp_menu(mode)) {
                     for (auto& tr : tl.tracks) {

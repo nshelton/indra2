@@ -79,12 +79,14 @@ public:
     // GPU execution time of the most recently completed frame, in ms
     float gpu_frame_ms() const;
 
-    // Per-compute-pass GPU times of the most recently completed frame, in
-    // dispatch order, labeled by DispatchParams::label. Measured with
-    // stage-boundary counter samples; empty when the device can't sample
-    // there (then only gpu_frame_ms is available). Blits and the ImGui
-    // render pass aren't sampled — the gap between this sum and
-    // gpu_frame_ms is exactly that overhead.
+    // Per-pass GPU times of the most recently completed frame, in encode
+    // order: every dispatch (labeled by DispatchParams::label), the screen
+    // blit, and the ImGui render pass. Measured with stage-boundary counter
+    // samples; empty when the device can't sample there (then only
+    // gpu_frame_ms is available). Encoder timestamps exclude the vsync
+    // wait for a drawable, which gpu_frame_ms (wall span) includes — the
+    // gap between this sum and gpu_frame_ms is that idle wait plus the
+    // unsampled readback blits.
     std::vector<std::pair<std::string, double>> gpu_pass_ms() const;
 
     // Type-erased Metal pointers (for external use if needed)
