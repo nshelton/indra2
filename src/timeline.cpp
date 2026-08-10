@@ -234,16 +234,31 @@ void Timeline::eval_camera_channels(float t, CameraKey& out) const {
         out.log_dist = a->log_dist + (b->log_dist - a->log_dist) * u;
         out.fov = a->fov + (b->fov - a->fov) * u;
     } else {
-        // Catmull-Rom the target and scalars, slerp the direction. Direction
-        // stays a two-key slerp on purpose: a spline through unit vectors
-        // leaves the sphere and needs renormalizing, which reintroduces the
-        // rate non-uniformity the spline was for.
         const CameraKey& k0 = (i >= 2)               ? cam_keys[i - 2] : *a;
         const CameraKey& k3 = (i + 1 < cam_keys.size()) ? cam_keys[i + 1] : *b;
         for (int c = 0; c < 3; c++) {
             out.target[c] = catmull_rom(k0.target[c], a->target[c], b->target[c], k3.target[c], u);
         }
-        v3::slerp(a->dir, b->dir, u, out.dir);
+        // Direction: Catmull-Rom through the unit vectors, renormalized.
+        // A per-segment slerp is only C0 — every key was a kink in turn
+        // rate, plainly visible as a sharp junction in the dir channels of
+        // the curve editor and as a sudden swerve in renders. The spline
+        // leaves the sphere between keys so the angular rate is no longer
+        // exactly uniform, but normalize keeps the vector unit and the
+        // path C1. Nearly-cancelling spline values (opposing keys plus
+        // overshoot) fall back to the slerp.
+        float d[3];
+        for (int c = 0; c < 3; c++) {
+            d[c] = catmull_rom(k0.dir[c], a->dir[c], b->dir[c], k3.dir[c], u);
+        }
+        float dlen = v3::length(d);
+        if (dlen > 1e-4f) {
+            out.dir[0] = d[0] / dlen;
+            out.dir[1] = d[1] / dlen;
+            out.dir[2] = d[2] / dlen;
+        } else {
+            v3::slerp(a->dir, b->dir, u, out.dir);
+        }
         // log-space so a zoom covers a constant *ratio* per second. Linear
         // world-space distance across orders of magnitude is a lunge then a
         // crawl — the whole point of fractal flythroughs is the constant rate.
@@ -279,7 +294,7 @@ void Timeline::apply(float t, ShaderManager& shaders, Camera& cam) const {
             break;
         }
     }
-    if (camera_driven()) eval_camera(t, cam);
+    if (camera_driven() && !editing_camera) eval_camera(t, cam);
 }
 
 // ---- Serialization ----

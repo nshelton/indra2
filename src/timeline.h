@@ -85,6 +85,11 @@ struct Timeline {
     // alone next frame, otherwise the curve stomps the drag before the user
     // ever sees it move. Cleared by the host each frame before drawing the UI.
     std::string editing_shader, editing_param;
+    // Same latch for the Camera panel's pose widgets: with auto-key on they
+    // are enabled while the timeline drives the camera, and without this
+    // eval_camera overwrites every edit (fov most visibly — it has no mouse
+    // path, so the slider is its only input) before it ever renders.
+    bool editing_camera = false;
 
     // --- Queries ---
     const Track* find(const std::string& shader, const std::string& param, int comp) const;

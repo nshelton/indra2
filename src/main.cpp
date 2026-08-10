@@ -808,6 +808,7 @@ int main(int argc, char* argv[]) {
         // reads it next frame to leave that channel alone mid-drag.
         timeline.editing_shader.clear();
         timeline.editing_param.clear();
+        timeline.editing_camera = false;
 
         // Trackball pivot marker: project target to screen, draw behind ImGui windows
         if (camera.mode == CameraMode::Trackball) {
@@ -937,14 +938,17 @@ int main(int argc, char* argv[]) {
             // field loses focus after an edit.
             ImGui::BeginDisabled(cam_locked);
             bool cam_typed = false;
+            bool cam_editing = false;  // latches apply() off so the curve can't stomp a held widget
             if (ImGui::Button("Reset Camera")) {
                 camera.pos[0] = 0; camera.pos[1] = 0; camera.pos[2] = 1;
                 camera.target[0] = 0; camera.target[1] = 0; camera.target[2] = 0;
             }
             ImGui::InputFloat3("Target", camera.target, "%.7g");
             cam_typed |= ImGui::IsItemDeactivatedAfterEdit();
+            cam_editing |= ImGui::IsItemActive();
             ImGui::InputFloat3("Position", camera.pos, "%.7g");
             cam_typed |= ImGui::IsItemDeactivatedAfterEdit();
+            cam_editing |= ImGui::IsItemActive();
             {
                 float off[3];
                 v3::sub(camera.pos, camera.target, off);
@@ -960,11 +964,17 @@ int main(int argc, char* argv[]) {
                     v3::mad(camera.target, off, dist / cur, camera.pos);
                 }
                 cam_typed |= ImGui::IsItemDeactivatedAfterEdit();
+                cam_editing |= ImGui::IsItemActive();
             }
             ImGui::SliderAngle("FOV", &camera.fov, 5.0f, 160.0f);
             cam_typed |= ImGui::IsItemDeactivatedAfterEdit();
+            cam_editing |= ImGui::IsItemActive();
             ImGui::EndDisabled();
             if (cam_locked) ImGui::TextDisabled("(timeline is driving the camera)");
+
+            // Held widget: stop eval_camera from overwriting the edit next
+            // frame — same latch the param sliders use.
+            if (cam_editing) timeline.editing_camera = true;
 
             // Typed edits sequence exactly like mouse moves do.
             if (cam_typed && timeline.enabled && timeline.auto_key && timeline.drive_camera) {
