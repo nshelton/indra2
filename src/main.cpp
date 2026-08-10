@@ -823,26 +823,37 @@ int main(int argc, char* argv[]) {
             ImGui::PlotLines("##gputime", gpu_buf, FT_SAMPLES, gpu_idx, overlay,
                              0.0f, 33.3f, ImVec2(0, 40));
 
-            // Per-pass GPU breakdown (stage-boundary timestamps). Smoothed
-            // like the totals; keyed by label so a pass that skips a frame
-            // (sample throttle) just holds its last value. gpu_frame_ms is
-            // the command buffer's wall span on the GPU, which under vsync
-            // includes stalling for the compositor to release a drawable —
-            // encoder timestamps don't. The remainder is therefore idle
-            // wait (plus the unsampled tiny readback blits), not work.
+            // Per-pass GPU breakdown (stage-boundary timestamps), smoothed.
+            // Rows are drawn from the persistent label set, NOT the current
+            // frame's list: the converged throttle skips trace/reconstruct
+            // on most frames, and rows blinking in and out would re-layout
+            // everything below the panel every few frames. A pass that
+            // skipped this frame just holds its smoothed value. gpu_frame_ms
+            // is the buffer's wall span (includes the vsync drawable stall);
+            // encoder timestamps aren't — the remainder row is idle wait
+            // plus the tiny unsampled readback blits.
             static std::vector<std::pair<std::string, float>> pass_avg;
             double pass_sum = 0.0;
             for (const auto& [label, ms] : backend.gpu_pass_ms()) {
                 pass_sum += ms;
+                // The renderers displace each other: without this, switching
+                // modes would leave a stale row for the inactive one forever.
+                const char* other = label == "pathtrace" ? "raymarch"
+                                  : label == "raymarch"  ? "pathtrace" : nullptr;
+                if (other) {
+                    std::erase_if(pass_avg, [&](const auto& e) { return e.first == other; });
+                }
                 auto it = std::find_if(pass_avg.begin(), pass_avg.end(),
                                        [&](const auto& e) { return e.first == label; });
                 if (it == pass_avg.end()) it = pass_avg.insert(pass_avg.end(), {label, (float)ms});
                 it->second += ((float)ms - it->second) * 0.05f;
-                ImGui::Text("  %-11s %5.2f ms", label.c_str(), it->second);
             }
-            if (pass_sum > 0.0) {
+            for (const auto& [label, ms] : pass_avg) {
+                ImGui::Text("  %-11s %5.2f ms", label.c_str(), ms);
+            }
+            if (!pass_avg.empty()) {  // empty = sampling unsupported, no breakdown at all
                 static float other_avg = 0;
-                other_avg += ((float)(gpu_ms - pass_sum) - other_avg) * 0.05f;
+                if (pass_sum > 0.0) other_avg += ((float)(gpu_ms - pass_sum) - other_avg) * 0.05f;
                 ImGui::Text("  %-11s %5.2f ms", "idle/vsync", std::max(other_avg, 0.0f));
             }
         }
