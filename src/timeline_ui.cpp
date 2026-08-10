@@ -32,6 +32,7 @@ const ImU32 COL_KEY_STEP  = IM_COL32(120, 190, 230, 255);
 const ImU32 COL_KEY_EDGE  = IM_COL32(20, 20, 24, 255);
 const ImU32 COL_CAM       = IM_COL32(120, 220, 150, 255);
 const ImU32 COL_TEXT_DIM  = IM_COL32(150, 150, 158, 255);
+const ImU32 COL_MUTED     = IM_COL32(178, 112, 240, 255);  // parked track: slider owns the value
 
 struct Row {
     enum Kind { Camera, Group, Component };
@@ -296,7 +297,52 @@ void draw_timeline(Timeline& tl, TimelineUI& ui, ShaderManager& shaders, Camera&
         }
 
         // --- Label column ---
-        ImGui::SetCursorScreenPos(ImVec2(canvas_p.x + 4, ry + 2));
+        // Mute checkbox first: checked = the timeline drives this value,
+        // unchecked = keys park (purple) and the slider — or the mouse, for
+        // the camera — owns it. Ids key on group_key/component, stable across
+        // row-index shifts; the group box toggles every component together.
+        bool row_muted = false;
+        ImGui::SetCursorScreenPos(ImVec2(canvas_p.x + 4, ry + 3));
+        ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(0, 0));
+        if (row.kind == Row::Camera) {
+            ImGui::PushID("cam_on");
+            if (ImGui::Checkbox("##on", &tl.drive_camera)) mutated = true;
+            ImGui::PopID();
+            row_muted = !tl.drive_camera;
+        } else if (row.kind == Row::Component) {
+            Track& tr = tl.tracks[row.track_index];
+            ImGui::PushID(row.group_key.c_str());
+            ImGui::PushID(row.component);
+            if (ImGui::Checkbox("##on", &tr.enabled)) mutated = true;
+            ImGui::PopID();
+            ImGui::PopID();
+            row_muted = !tr.enabled;
+        } else {
+            bool any = false, all_on = true, any_on = false;
+            for (const auto& t : tl.tracks) {
+                if (t.shader != row.shader || t.param != row.param) continue;
+                any = true;
+                all_on &= t.enabled;
+                any_on |= t.enabled;
+            }
+            row_muted = !any_on;  // purple only when every component is parked
+            bool on = any && all_on;
+            ImGui::PushID(row.group_key.c_str());
+            if (ImGui::Checkbox("##on", &on)) {
+                for (auto& t : tl.tracks) {
+                    if (t.shader == row.shader && t.param == row.param) t.enabled = on;
+                }
+                mutated = true;
+            }
+            ImGui::PopID();
+        }
+        ImGui::PopStyleVar();
+        if (ImGui::IsItemHovered()) {
+            ImGui::SetTooltip(row_muted ? "Muted: the value is set by hand, keys are parked"
+                                        : "Animating — uncheck to set the value by hand");
+        }
+        ImGui::SameLine(0, 4);
+
         if (row.kind == Row::Group && row.sp && row.sp->component_count > 1) {
             ImGui::PushID((int)r);
             if (ImGui::SmallButton(ui.is_expanded(row.group_key) ? "v" : ">")) {
@@ -305,7 +351,9 @@ void draw_timeline(Timeline& tl, TimelineUI& ui, ShaderManager& shaders, Camera&
             ImGui::PopID();
             ImGui::SameLine(0, 4);
         }
-        ImU32 label_col = row.kind == Row::Camera ? COL_CAM : IM_COL32(220, 220, 226, 255);
+        ImU32 label_col = row_muted               ? COL_MUTED
+                        : row.kind == Row::Camera ? COL_CAM
+                                                  : IM_COL32(220, 220, 226, 255);
         ImGui::PushStyleColor(ImGuiCol_Text, label_col);
         ImGui::TextUnformatted(row.label.c_str());
         ImGui::PopStyleColor();
@@ -380,7 +428,8 @@ void draw_timeline(Timeline& tl, TimelineUI& ui, ShaderManager& shaders, Camera&
                     ImGui::EndPopup();
                 }
                 if (structural_change) { ImGui::PopID(); break; }
-                ImU32 fill = selected ? COL_KEY_SEL
+                ImU32 fill = selected  ? COL_KEY_SEL
+                           : row_muted ? COL_MUTED
                            : (tl.cam_keys[k].interp == Interp::Step ? COL_KEY_STEP : COL_CAM);
                 draw_diamond(tdl, ImVec2(x, cy), KEY_R, fill, COL_KEY_EDGE);
                 ImGui::PopID();
@@ -503,7 +552,9 @@ void draw_timeline(Timeline& tl, TimelineUI& ui, ShaderManager& shaders, Camera&
                 key_idx[k] < (int)tl.tracks[owner[k]].keys.size()) {
                 mode = tl.tracks[owner[k]].keys[key_idx[k]].interp;
             }
-            ImU32 fill = selected ? COL_KEY_SEL : (mode == Interp::Step ? COL_KEY_STEP : COL_KEY);
+            ImU32 fill = selected  ? COL_KEY_SEL
+                       : row_muted ? COL_MUTED
+                       : (mode == Interp::Step ? COL_KEY_STEP : COL_KEY);
             draw_diamond(tdl, ImVec2(x, cy), KEY_R, fill, COL_KEY_EDGE);
             ImGui::PopID();
         }

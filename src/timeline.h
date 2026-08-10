@@ -86,6 +86,9 @@ struct Timeline {
     const Track* find(const std::string& shader, const std::string& param, int comp) const;
     Track*       find(const std::string& shader, const std::string& param, int comp);
     bool         has_track(const std::string& shader, const std::string& param) const;
+    // Any un-muted track for the param. has_track && !track_active = fully
+    // muted: keys are parked and the slider owns the value.
+    bool         track_active(const std::string& shader, const std::string& param) const;
     bool         camera_driven() const { return enabled && drive_camera && !cam_keys.empty(); }
     float        frame_time() const { return fps > 0.0f ? 1.0f / fps : 1.0f / 30.0f; }
 

@@ -100,6 +100,13 @@ bool Timeline::has_track(const std::string& shader, const std::string& param) co
     return false;
 }
 
+bool Timeline::track_active(const std::string& shader, const std::string& param) const {
+    for (const auto& t : tracks) {
+        if (t.enabled && t.param == param && t.shader == shader) return true;
+    }
+    return false;
+}
+
 // ---- Timeline mutation ----
 
 Track& Timeline::get_or_create(const std::string& shader, const ShaderParam& p, int comp) {

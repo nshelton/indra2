@@ -500,7 +500,14 @@ static void render_param_row(ShaderParam& p, Timeline* tl, const char* shader_fi
     ImGui::PushID(p.name.c_str());
 
     bool animated = animatable && tl->has_track(shader_file, p.name);
-    if (animated) ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.95f, 0.85f, 0.35f, 1.0f));
+    // Gold = the timeline drives this value; purple = it has tracks but
+    // they're all muted, so the slider owns it (matches the dope sheet).
+    bool muted = animated && !tl->track_active(shader_file, p.name);
+    const ImVec4 anim_tint = muted ? ImVec4(0.72f, 0.48f, 0.95f, 1.0f)
+                                   : ImVec4(0.95f, 0.85f, 0.35f, 1.0f);
+    const ImU32 anim_overlay = muted ? IM_COL32(184, 122, 242, 255)
+                                     : IM_COL32(242, 217, 89, 255);
+    if (animated) ImGui::PushStyleColor(ImGuiCol_Text, anim_tint);
 
     const bool compact = g_compact_param_labels;
 
@@ -584,8 +591,7 @@ static void render_param_row(ShaderParam& p, Timeline* tl, const char* shader_fi
     // carry their name in the preview text and colors get theirs beside
     // the swatch, so neither wants an overlay.
     if (compact && !p.is_color && p.type != ShaderParam::Enum) {
-        overlay_label(name_buf, animated ? IM_COL32(242, 217, 89, 255)
-                                         : ImGui::GetColorU32(ImGuiCol_Text));
+        overlay_label(name_buf, animated ? anim_overlay : ImGui::GetColorU32(ImGuiCol_Text));
     }
 
     if (animated) ImGui::PopStyleColor();
@@ -617,7 +623,7 @@ static void render_param_row(ShaderParam& p, Timeline* tl, const char* shader_fi
     // has to come after everything above that reads LastItemData.
     if (compact && p.is_color) {
         ImGui::SameLine(0, ImGui::GetStyle().ItemInnerSpacing.x);
-        if (animated) ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.95f, 0.85f, 0.35f, 1.0f));
+        if (animated) ImGui::PushStyleColor(ImGuiCol_Text, anim_tint);
         ImGui::TextUnformatted(name_buf);
         if (animated) ImGui::PopStyleColor();
     }
