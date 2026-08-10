@@ -38,6 +38,22 @@ static const char* preset_popup_title(PendingPreset::Kind k) {
     }
 }
 
+// "51s", "4m51s", "10m", "1h4m" — the two largest nonzero units. An ETA is
+// a glance value; nobody wants to divide 600 by 60 mid-render.
+static void format_duration(double secs, char* out, size_t n) {
+    int t = (int)std::lround(std::max(secs, 0.0));
+    int h = t / 3600, m = (t / 60) % 60, s = t % 60;
+    if (h > 0) {
+        if (m > 0) std::snprintf(out, n, "%dh%dm", h, m);
+        else       std::snprintf(out, n, "%dh", h);
+    } else if (m > 0) {
+        if (s > 0) std::snprintf(out, n, "%dm%ds", m, s);
+        else       std::snprintf(out, n, "%dm", m);
+    } else {
+        std::snprintf(out, n, "%ds", s);
+    }
+}
+
 int main(int argc, char* argv[]) {
     // 1. SDL Init
     if (!SDL_Init(SDL_INIT_VIDEO)) {
@@ -1182,8 +1198,12 @@ int main(int argc, char* argv[]) {
                                     job.samples);
             } else {
                 char pb[96];
-                double eta = job.avg_frame_secs * (job.total_frames() - job.done_frames());
-                std::snprintf(pb, sizeof(pb), "frame %d/%d  sample %u/%u  ETA %.0fs",
+                char eta[24] = "--";  // no estimate until the first frame lands
+                if (job.avg_frame_secs > 0.0) {
+                    format_duration(job.avg_frame_secs * (job.total_frames() - job.done_frames()),
+                                    eta, sizeof(eta));
+                }
+                std::snprintf(pb, sizeof(pb), "frame %d/%d  sample %u/%u  ETA %s",
                               job.done_frames() + 1, job.total_frames(),
                               job.sample, job.samples, eta);
                 ImGui::ProgressBar(job.progress(), ImVec2(-1, 0), pb);
