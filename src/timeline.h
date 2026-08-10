@@ -135,6 +135,8 @@ struct Timeline {
 struct TimelineUI {
     float view_start = 0.0f;     // visible time range (zoom/pan)
     float view_end   = 10.0f;
+    bool  show_motion = false;   // camera speed graph strip
+    bool  show_accel  = false;   // overlay acceleration in it
     // What a full-span view_end equals. While the view spans [0, duration]
     // exactly it follows duration edits; zoom/pan detaches it, and zooming
     // fully back out (clamped to the animation) reattaches. -1 = fit on

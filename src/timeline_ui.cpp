@@ -20,6 +20,7 @@ constexpr float RULER_H  = 24.0f;
 constexpr float ROW_H    = 20.0f;
 constexpr float KEY_R    = 5.5f;     // diamond half-diagonal
 constexpr float CURVE_H  = 180.0f;
+constexpr float MOTION_H = 96.0f;    // camera speed-graph strip
 
 const ImU32 COL_BG        = IM_COL32(28, 28, 32, 255);
 const ImU32 COL_ROW_ALT   = IM_COL32(38, 38, 44, 255);
@@ -179,6 +180,57 @@ void sort_all_keys(Timeline& tl) {
                   [](const Key& a, const Key& b) { return a.t < b.t; });
     std::sort(tl.cam_keys.begin(), tl.cam_keys.end(),
               [](const CameraKey& a, const CameraKey& b) { return a.t < b.t; });
+}
+
+// ---- Camera motion metric ----
+// How fast the *view* changes between two camera samples: radians of turn,
+// log-zoom (a constant ratio per second reads as constant speed in a
+// fractal dive), apparent target travel (world units over the current
+// distance), and fov change. All four are dimensionless and of comparable
+// perceptual weight, so the sum is a usable "how fast does it feel" rate.
+float motion_delta(const CameraKey& a, const CameraKey& b) {
+    float dp = std::clamp(a.dir[0] * b.dir[0] + a.dir[1] * b.dir[1] + a.dir[2] * b.dir[2],
+                          -1.0f, 1.0f);
+    float dx = b.target[0] - a.target[0];
+    float dy = b.target[1] - a.target[1];
+    float dz = b.target[2] - a.target[2];
+    return std::acos(dp) + std::fabs(b.log_dist - a.log_dist) +
+           std::sqrt(dx * dx + dy * dy + dz * dz) /
+               std::exp(0.5f * (a.log_dist + b.log_dist)) +
+           std::fabs(b.fov - a.fov);
+}
+
+// After Effects' "rove across time", for the camera track: every key keeps
+// its pose, interior keys move in time so the combined motion accrues
+// linearly from first key to last. The spline shape depends on the timing,
+// so a few passes are run to converge.
+void retime_camera_even(Timeline& tl) {
+    if (tl.cam_keys.size() < 3) return;
+    for (int pass = 0; pass < 3; pass++) {
+        float t0 = tl.cam_keys.front().t;
+        float t1 = tl.cam_keys.back().t;
+        if (t1 - t0 < 1e-3f) return;
+        constexpr int N = 1024;
+        std::vector<float> cum(N + 1, 0.0f);
+        CameraKey a, b;
+        tl.eval_camera_channels(t0, a);
+        for (int i = 1; i <= N; i++) {
+            tl.eval_camera_channels(t0 + (t1 - t0) * (float)i / N, b);
+            cum[i] = cum[i - 1] + motion_delta(a, b);
+            a = b;
+        }
+        if (cum[N] < 1e-6f) return;
+        std::vector<float> nt(tl.cam_keys.size());
+        nt.front() = t0;
+        nt.back() = t1;
+        for (size_t k = 1; k + 1 < tl.cam_keys.size(); k++) {
+            float f = (tl.cam_keys[k].t - t0) / (t1 - t0);
+            int i = std::clamp((int)(f * N), 0, N);
+            nt[k] = t0 + (cum[i] / cum[N]) * (t1 - t0);
+        }
+        for (size_t k = 0; k < tl.cam_keys.size(); k++) tl.cam_keys[k].t = nt[k];
+    }
+    tl.revision++;
 }
 
 // ---- Camera curve editor ----
@@ -432,6 +484,12 @@ void draw_timeline(Timeline& tl, TimelineUI& ui, ShaderManager& shaders, Camera&
                 (int)std::lround(tl.duration * tl.fps));
     ImGui::SameLine();
     ImGui::Checkbox("Curves", &ui.show_curves);
+    ImGui::SameLine();
+    ImGui::Checkbox("Motion", &ui.show_motion);
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Camera speed graph: turn / zoom / pan rates over time.\n"
+                          "Constant perceived speed = flat lines.");
+    }
 
     // Keyboard edits on the selection: Delete/Backspace removes it,
     // Cmd/Ctrl+C/X/V copy, cut and paste (paste lands at the playhead).
@@ -584,7 +642,8 @@ void draw_timeline(Timeline& tl, TimelineUI& ui, ShaderManager& shaders, Camera&
     // ---- Track region (scrolls) ----
     ImGui::SetCursorScreenPos(ImVec2(canvas_p.x, ruler_max.y));
     float rows_h = std::max(ROW_H * rows.size() + 4.0f, ROW_H * 3.0f);
-    float avail_h = ImGui::GetContentRegionAvail().y - (ui.show_curves ? CURVE_H + 8.0f : 0.0f);
+    float avail_h = ImGui::GetContentRegionAvail().y - (ui.show_curves ? CURVE_H + 8.0f : 0.0f)
+                                                    - (ui.show_motion ? MOTION_H + 8.0f : 0.0f);
     float child_h = std::clamp(rows_h, ROW_H * 3.0f, std::max(avail_h, ROW_H * 3.0f));
 
     ImGui::PushStyleColor(ImGuiCol_ChildBg, ImGui::ColorConvertU32ToFloat4(COL_BG));
@@ -969,6 +1028,110 @@ void draw_timeline(Timeline& tl, TimelineUI& ui, ShaderManager& shaders, Camera&
     }
 
     if (mutated) tl.revision++;
+
+    // ---- Motion diagnostic (speed graph) ----
+    // Velocity of the interpolated camera across the visible range, per
+    // component of the motion metric; optionally its acceleration. Flat
+    // velocity = constant perceived speed. "Even speed" retimes the interior
+    // camera keys so the combined motion accrues linearly — usually the
+    // whole fix for lurchy keyframing.
+    if (ui.show_motion) {
+        ImGui::Spacing();
+        ImVec2 mp = ImGui::GetCursorScreenPos();
+        ImGui::Dummy(ImVec2(canvas_w, MOTION_H));
+        ImDrawList* mdl = ImGui::GetWindowDrawList();
+        mdl->AddRectFilled(mp, ImVec2(mp.x + canvas_w, mp.y + MOTION_H), COL_BG);
+
+        if (tl.cam_keys.size() < 2) {
+            mdl->AddText(ImVec2(mp.x + 8, mp.y + 8), COL_TEXT_DIM,
+                         "Motion: needs at least 2 camera keys");
+        } else {
+            constexpr int NS = 256;
+            static float vel[3][NS];
+            static const char* names[3] = {"turn", "zoom", "pan"};
+            static const ImU32 cols[3] = {COL_CAM, IM_COL32(230, 200, 90, 255),
+                                          IM_COL32(120, 160, 250, 255)};
+            float h = span / NS;
+            float vmax[3] = {1e-9f, 1e-9f, 1e-9f};
+            CameraKey s0, s1;
+            tl.eval_camera_channels(ui.view_start, s0);
+            for (int i = 0; i < NS; i++) {
+                tl.eval_camera_channels(ui.view_start + h * (i + 1), s1);
+                float dp = std::clamp(s0.dir[0] * s1.dir[0] + s0.dir[1] * s1.dir[1] +
+                                      s0.dir[2] * s1.dir[2], -1.0f, 1.0f);
+                float dx = s1.target[0] - s0.target[0];
+                float dy = s1.target[1] - s0.target[1];
+                float dz = s1.target[2] - s0.target[2];
+                vel[0][i] = std::acos(dp) / h;
+                vel[1][i] = std::fabs(s1.log_dist - s0.log_dist) / h;
+                vel[2][i] = std::sqrt(dx * dx + dy * dy + dz * dz) /
+                            std::exp(0.5f * (s0.log_dist + s1.log_dist)) / h;
+                for (int c = 0; c < 3; c++) vmax[c] = std::max(vmax[c], vel[c][i]);
+                s0 = s1;
+            }
+
+            float mx0 = mp.x + LABEL_W;
+            float mvw = canvas_w - LABEL_W;
+            mdl->PushClipRect(ImVec2(mx0, mp.y), ImVec2(mp.x + canvas_w, mp.y + MOTION_H), true);
+            std::vector<ImVec2> pts(NS);
+            for (int c = 0; c < 3; c++) {
+                // Each curve normalized to its own peak — the shapes are the
+                // diagnostic, the peaks are printed in the legend.
+                for (int i = 0; i < NS; i++) {
+                    pts[i] = ImVec2(mx0 + mvw * (i + 0.5f) / NS,
+                                    mp.y + MOTION_H - 6.0f -
+                                        vel[c][i] / vmax[c] * (MOTION_H - 14.0f));
+                }
+                mdl->AddPolyline(pts.data(), NS, cols[c], 0, 1.4f);
+
+                if (ui.show_accel) {
+                    // Signed acceleration, centered on the strip's midline.
+                    float amax = 1e-9f;
+                    for (int i = 0; i + 1 < NS; i++) {
+                        amax = std::max(amax, std::fabs(vel[c][i + 1] - vel[c][i]) / h);
+                    }
+                    for (int i = 0; i + 1 < NS; i++) {
+                        float a = (vel[c][i + 1] - vel[c][i]) / h;
+                        pts[i] = ImVec2(mx0 + mvw * (i + 1.0f) / NS,
+                                        mp.y + MOTION_H * 0.5f - a / amax * (MOTION_H * 0.5f - 8.0f));
+                    }
+                    mdl->AddPolyline(pts.data(), NS - 1, (cols[c] & 0x00FFFFFF) | 0x60000000, 0, 1.0f);
+                }
+            }
+            if (ui.show_accel) {
+                mdl->AddLine(ImVec2(mx0, mp.y + MOTION_H * 0.5f),
+                             ImVec2(mp.x + canvas_w, mp.y + MOTION_H * 0.5f), COL_GRID);
+            }
+            mdl->PopClipRect();
+
+            // Legend with peak rates, plus the controls.
+            char lbl[48];
+            const char* units[3] = {"rad/s", "log/s", "/s"};
+            for (int c = 0; c < 3; c++) {
+                std::snprintf(lbl, sizeof(lbl), "%s  %.3g %s", names[c], vmax[c], units[c]);
+                mdl->AddText(ImVec2(mp.x + 6, mp.y + 4 + c * 16.0f), cols[c], lbl);
+            }
+            ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(0, 0));
+            ImGui::SetCursorScreenPos(ImVec2(mp.x + 6, mp.y + 4 + 3 * 16.0f));
+            ImGui::Checkbox("accel", &ui.show_accel);
+            ImGui::PopStyleVar();
+            ImGui::SetCursorScreenPos(ImVec2(mp.x + 6, mp.y + MOTION_H - 24.0f));
+            if (ImGui::Button("Even speed")) retime_camera_even(tl);
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip("Retime the camera keys (poses unchanged) so combined\n"
+                                  "motion accrues linearly — flattens these curves.\n"
+                                  "Like After Effects' \"rove across time\".");
+            }
+
+            // Playhead.
+            float px = t_to_x(tl.playhead);
+            if (px >= mx0 && px <= mp.x + canvas_w) {
+                mdl->AddLine(ImVec2(px, mp.y), ImVec2(px, mp.y + MOTION_H), COL_PLAYHEAD, 1.5f);
+            }
+        }
+        mdl->AddRect(mp, ImVec2(mp.x + canvas_w, mp.y + MOTION_H), COL_GRID);
+        ImGui::SetCursorScreenPos(ImVec2(mp.x, mp.y + MOTION_H));
+    }
 
     // ---- Curve editor ----
     if (!ui.show_curves) return;
