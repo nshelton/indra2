@@ -577,6 +577,11 @@ void draw_timeline(Timeline& tl, TimelineUI& ui, ShaderManager& shaders, Camera&
     ImGui::SetNextItemAllowOverlap();
     ImGui::InvisibleButton("##curvebg", ImVec2(cw, CURVE_H));
 
+    // The draw list clips to the window, not to this rect — spline overshoot
+    // past the padded axis and steep Bezier tangent handles would paint over
+    // whatever the caller lays out below the curve view.
+    dl->PushClipRect(cp, ImVec2(cp.x + cw, cp.y + CURVE_H), true);
+
     bool curve_mutated = false;
     for (size_t ti = 0; ti < tl.tracks.size(); ti++) {
         Track& tr = tl.tracks[ti];
@@ -680,7 +685,14 @@ void draw_timeline(Timeline& tl, TimelineUI& ui, ShaderManager& shaders, Camera&
             dl->AddLine(ImVec2(px, cp.y), ImVec2(px, cp.y + CURVE_H), COL_PLAYHEAD, 1.5f);
         }
     }
+    dl->PopClipRect();
+    // Outside the clip so the border's edge pixels aren't shaved off.
     dl->AddRect(cp, ImVec2(cp.x + cw, cp.y + CURVE_H), COL_GRID);
+
+    // Every key and tangent handle above moved the layout cursor to wherever
+    // that button sat inside the rect. Park it on the rect's bottom edge, or
+    // the caller's next widgets are laid out mid-curve, over the drawing.
+    ImGui::SetCursorScreenPos(ImVec2(cp.x, cp.y + CURVE_H));
 
     if (curve_mutated) tl.revision++;
 }
