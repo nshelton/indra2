@@ -26,6 +26,9 @@ struct Key {
     float  v = 0.0f;
     Interp interp = Interp::Smooth;
     float  in_tan = 0.0f, out_tan = 0.0f;  // Bezier only, value-units per second
+    // Transient UI selection. Lives on the key so sorts and inserts can't
+    // orphan it the way stored indices would. Never serialized.
+    bool   selected = false;
 };
 
 // One scalar channel. A float3 param owns three of these.
@@ -53,6 +56,7 @@ struct CameraKey {
     float  log_dist  = 0.0f;       // log(|pos - target|)
     float  fov       = 1.2f;
     Interp interp    = Interp::Smooth;
+    bool   selected  = false;      // transient UI selection, never serialized
 };
 
 struct Timeline {
@@ -129,10 +133,17 @@ struct TimelineUI {
     float fitted_duration = -1.0f;
     bool  show_curves = false;
 
-    // Selection: either a camera key (sel_camera) or a key in tracks[sel_track].
+    // Last-clicked key (drives the curve editor's focus). The multi-key
+    // selection itself lives as `selected` flags on the keys.
     bool  sel_camera = false;
     int   sel_track  = -1;
     int   sel_key    = -1;
+
+    // Marquee drag state (screen coords) and the rigid multi-key move
+    // accumulator — see timeline_ui.cpp.
+    bool  marquee = false;
+    float marquee_x0 = 0.0f, marquee_y0 = 0.0f;
+    float drag_accum = 0.0f, drag_applied = 0.0f;
 
     // Groups expanded to their per-component rows, keyed "shader|param".
     std::vector<std::string> expanded;

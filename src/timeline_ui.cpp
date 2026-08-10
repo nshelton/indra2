@@ -74,6 +74,42 @@ bool interp_menu(Interp& mode) {
     return changed;
 }
 
+// ---- Multi-key selection ----
+// Selection is the `selected` flag on Key/CameraKey, so it survives the
+// sorts and inserts that would orphan stored indices.
+
+void clear_selection(Timeline& tl) {
+    for (auto& tr : tl.tracks)
+        for (auto& k : tr.keys) k.selected = false;
+    for (auto& k : tl.cam_keys) k.selected = false;
+}
+
+bool any_selected(const Timeline& tl) {
+    for (const auto& tr : tl.tracks)
+        for (const auto& k : tr.keys)
+            if (k.selected) return true;
+    for (const auto& k : tl.cam_keys)
+        if (k.selected) return true;
+    return false;
+}
+
+void delete_selected(Timeline& tl) {
+    for (auto& tr : tl.tracks)
+        std::erase_if(tr.keys, [](const Key& k) { return k.selected; });
+    std::erase_if(tl.cam_keys, [](const CameraKey& k) { return k.selected; });
+}
+
+// Dragging doesn't keep keys sorted (flags make that safe, and eval degrades
+// gracefully on a transiently unsorted track); restore the invariant when
+// the drag ends.
+void sort_all_keys(Timeline& tl) {
+    for (auto& tr : tl.tracks)
+        std::sort(tr.keys.begin(), tr.keys.end(),
+                  [](const Key& a, const Key& b) { return a.t < b.t; });
+    std::sort(tl.cam_keys.begin(), tl.cam_keys.end(),
+              [](const CameraKey& a, const CameraKey& b) { return a.t < b.t; });
+}
+
 // Every ShaderParam the timeline can see, in shader declaration order.
 void collect_rows(Timeline& tl, TimelineUI& ui, ShaderManager& shaders, std::vector<Row>& rows) {
     rows.push_back({Row::Camera, "", "", "Camera", "", -1, -1, nullptr});
@@ -158,6 +194,20 @@ void draw_timeline(Timeline& tl, TimelineUI& ui, ShaderManager& shaders, Camera&
     ImGui::SameLine();
     ImGui::Checkbox("Curves", &ui.show_curves);
 
+    // Delete/Backspace removes every selected key. Before collect_rows so
+    // the row list never sees the deleted keys; gated on text input so
+    // typing a preset name can't nuke a selection.
+    if (!ImGui::GetIO().WantTextInput &&
+        ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows) &&
+        (ImGui::IsKeyPressed(ImGuiKey_Delete, false) ||
+         ImGui::IsKeyPressed(ImGuiKey_Backspace, false)) &&
+        any_selected(tl)) {
+        delete_selected(tl);
+        ui.sel_track = -1;
+        ui.sel_key = -1;
+        tl.revision++;
+    }
+
     // ---- Rows ----
     std::vector<Row> rows;
     collect_rows(tl, ui, shaders, rows);
@@ -190,6 +240,34 @@ void draw_timeline(Timeline& tl, TimelineUI& ui, ShaderManager& shaders, Camera&
     auto snap = [&](float t) {
         if (ImGui::GetIO().KeyShift) return t;
         return std::round(t / ft) * ft;
+    };
+
+    // Dragging any selected key moves the whole selection rigidly. Snapping
+    // works on the accumulated mouse motion (Shift = free), and the step is
+    // clamped so the selection's extremes stay inside [0, duration] without
+    // squashing the offsets between keys.
+    auto drag_selected = [&]() -> bool {
+        ui.drag_accum += ImGui::GetIO().MouseDelta.x * (span / track_w);
+        float target = ImGui::GetIO().KeyShift ? ui.drag_accum
+                                               : std::round(ui.drag_accum / ft) * ft;
+        float step = target - ui.drag_applied;
+        if (step == 0.0f) return false;
+        float mn = 1e9f, mx = -1e9f;
+        for (const auto& tr : tl.tracks)
+            for (const auto& k : tr.keys)
+                if (k.selected) { mn = std::min(mn, k.t); mx = std::max(mx, k.t); }
+        for (const auto& k : tl.cam_keys)
+            if (k.selected) { mn = std::min(mn, k.t); mx = std::max(mx, k.t); }
+        if (mx < mn) return false;
+        step = std::clamp(step, -mn, tl.duration - mx);
+        if (step == 0.0f) return false;
+        for (auto& tr : tl.tracks)
+            for (auto& k : tr.keys)
+                if (k.selected) k.t += step;
+        for (auto& k : tl.cam_keys)
+            if (k.selected) k.t += step;
+        ui.drag_applied += step;
+        return true;
     };
 
     ImDrawList* dl = ImGui::GetWindowDrawList();
@@ -261,14 +339,42 @@ void draw_timeline(Timeline& tl, TimelineUI& ui, ShaderManager& shaders, Camera&
     ImDrawList* tdl = ImGui::GetWindowDrawList();
     ImVec2 tracks_p = ImGui::GetCursorScreenPos();
 
-    // Background scrub surface, submitted first so key diamonds overlap it.
+    // Background surface, submitted first so key diamonds overlap it. Drag
+    // draws a marquee that selects the keys inside it (Shift adds to the
+    // selection); a plain click clears the selection and places the
+    // playhead. Continuous scrub-dragging lives on the ruler.
     ImGui::SetNextItemAllowOverlap();
     ImGui::SetCursorScreenPos(ImVec2(track_x0, tracks_p.y));
     ImGui::InvisibleButton("##scrub", ImVec2(track_w, child_h));
-    if (ImGui::IsItemActive()) {
-        tl.playhead = std::clamp(snap(x_to_t(ImGui::GetIO().MousePos.x)), 0.0f, tl.duration);
-        tl.playing = false;
+    {
+        ImGuiIO& io = ImGui::GetIO();
+        if (ImGui::IsItemActivated()) {
+            ui.marquee = false;
+            ui.marquee_x0 = io.MousePos.x;
+            ui.marquee_y0 = io.MousePos.y;
+        }
+        if (ImGui::IsItemActive() && !ui.marquee &&
+            ImGui::IsMouseDragging(ImGuiMouseButton_Left, 4.0f)) {
+            ui.marquee = true;
+        }
+        if (ImGui::IsItemDeactivated()) {
+            if (ui.marquee) {
+                ui.marquee = false;
+            } else {
+                clear_selection(tl);
+                tl.playhead = std::clamp(snap(x_to_t(io.MousePos.x)), 0.0f, tl.duration);
+                tl.playing = false;
+            }
+        }
     }
+    bool marquee_live = ui.marquee && ImGui::IsItemActive();
+    float mq_x0 = std::min(ui.marquee_x0, ImGui::GetIO().MousePos.x);
+    float mq_x1 = std::max(ui.marquee_x0, ImGui::GetIO().MousePos.x);
+    float mq_y0 = std::min(ui.marquee_y0, ImGui::GetIO().MousePos.y);
+    float mq_y1 = std::max(ui.marquee_y0, ImGui::GetIO().MousePos.y);
+    // Replace-mode marquee rebuilds the selection every frame from whatever
+    // is inside the rectangle; Shift keeps prior flags (additive, sticky).
+    if (marquee_live && !ImGui::GetIO().KeyShift) clear_selection(tl);
 
     // Vertical time grid behind the rows.
     {
@@ -389,26 +495,34 @@ void draw_timeline(Timeline& tl, TimelineUI& ui, ShaderManager& shaders, Camera&
 
         if (row.kind == Row::Camera) {
             for (size_t k = 0; k < tl.cam_keys.size(); k++) {
-                float x = t_to_x(tl.cam_keys[k].t);
+                CameraKey& ck = tl.cam_keys[k];
+                float x = t_to_x(ck.t);
                 if (x < track_x0 - KEY_R || x > track_x0 + track_w + KEY_R) continue;
+                if (marquee_live && x >= mq_x0 && x <= mq_x1 && cy >= mq_y0 && cy <= mq_y1) {
+                    ck.selected = true;
+                }
                 ImGui::PushID((int)(r * 4096 + k));
                 ImGui::SetCursorScreenPos(ImVec2(x - KEY_R, cy - KEY_R));
                 ImGui::InvisibleButton("##ck", ImVec2(KEY_R * 2, KEY_R * 2));
-                bool selected = ui.sel_camera && ui.sel_key == (int)k;
+                bool selected = ck.selected;
                 if (ImGui::IsItemActivated()) {
                     ui.sel_camera = true;
                     ui.sel_key = (int)k;
                     ui.sel_track = -1;
+                    // Grabbing an unselected key retargets the selection to
+                    // it (Shift adds); grabbing a selected one keeps the set
+                    // so the drag below moves the whole group.
+                    if (!ck.selected) {
+                        if (!ImGui::GetIO().KeyShift) clear_selection(tl);
+                        ck.selected = true;
+                        selected = true;
+                    }
+                    ui.drag_accum = ui.drag_applied = 0.0f;
                 }
                 if (ImGui::IsItemActive() && ImGui::IsMouseDragging(ImGuiMouseButton_Left)) {
-                    tl.cam_keys[k].t = std::clamp(snap(x_to_t(ImGui::GetIO().MousePos.x)),
-                                                  0.0f, tl.duration);
-                    mutated = true;
+                    if (drag_selected()) mutated = true;
                 }
-                if (ImGui::IsItemDeactivated() && mutated) {
-                    std::sort(tl.cam_keys.begin(), tl.cam_keys.end(),
-                              [](const CameraKey& a, const CameraKey& b) { return a.t < b.t; });
-                }
+                if (ImGui::IsItemDeactivated()) sort_all_keys(tl);
                 if (ImGui::BeginPopupContextItem("##ckm")) {
                     ImGui::TextDisabled("camera key %.3fs", tl.cam_keys[k].t);
                     ImGui::Separator();
@@ -468,36 +582,49 @@ void draw_timeline(Timeline& tl, TimelineUI& ui, ShaderManager& shaders, Camera&
             std::sort(times.begin(), times.end());
         }
 
+        // The keys this row addresses at a given time: a group row spans
+        // every component's key inside the merge window, a component row
+        // just its own channel.
+        auto row_keys_at = [&](float t, auto&& fn) {
+            for (auto& tr : tl.tracks) {
+                if (tr.shader != row.shader || tr.param != row.param) continue;
+                if (row.kind == Row::Component && tr.component != row.component) continue;
+                for (auto& key : tr.keys) {
+                    if (std::fabs(key.t - t) < ft * 0.25f) fn(key);
+                }
+            }
+        };
+
         for (size_t k = 0; k < times.size(); k++) {
             float x = t_to_x(times[k]);
             if (x < track_x0 - KEY_R || x > track_x0 + track_w + KEY_R) continue;
+            if (marquee_live && x >= mq_x0 && x <= mq_x1 && cy >= mq_y0 && cy <= mq_y1) {
+                row_keys_at(times[k], [](Key& key) { key.selected = true; });
+            }
             ImGui::PushID((int)(r * 4096 + k));
             ImGui::SetCursorScreenPos(ImVec2(x - KEY_R, cy - KEY_R));
             ImGui::InvisibleButton("##k", ImVec2(KEY_R * 2, KEY_R * 2));
 
-            bool selected = !ui.sel_camera && owner[k] >= 0 &&
-                            ui.sel_track == owner[k] && ui.sel_key == key_idx[k];
+            bool selected = false;
+            row_keys_at(times[k], [&](Key& key) { selected |= key.selected; });
             if (ImGui::IsItemActivated()) {
                 ui.sel_camera = false;
                 ui.sel_track = owner[k];
                 ui.sel_key = key_idx[k];
+                // Grabbing an unselected key retargets the selection to it
+                // (Shift adds); a selected one keeps the set for the drag.
+                if (!selected) {
+                    if (!ImGui::GetIO().KeyShift) clear_selection(tl);
+                    row_keys_at(times[k], [](Key& key) { key.selected = true; });
+                    selected = true;
+                }
+                ui.drag_accum = ui.drag_applied = 0.0f;
                 if (owner[k] < 0) ui.toggle_expanded(row.group_key);
             }
             if (ImGui::IsItemActive() && ImGui::IsMouseDragging(ImGuiMouseButton_Left)) {
-                float nt = std::clamp(snap(x_to_t(ImGui::GetIO().MousePos.x)), 0.0f, tl.duration);
-                float old = times[k];
-                for (auto& tr : tl.tracks) {
-                    if (tr.shader != row.shader || tr.param != row.param) continue;
-                    if (row.kind == Row::Component && tr.component != row.component) continue;
-                    for (auto& key : tr.keys) {
-                        if (std::fabs(key.t - old) < ft * 0.25f) key.t = nt;
-                    }
-                    std::sort(tr.keys.begin(), tr.keys.end(),
-                              [](const Key& a, const Key& b) { return a.t < b.t; });
-                }
-                times[k] = nt;
-                mutated = true;
+                if (drag_selected()) mutated = true;
             }
+            if (ImGui::IsItemDeactivated()) sort_all_keys(tl);
 
             if (ImGui::BeginPopupContextItem("##km")) {
                 ImGui::TextDisabled("%s @ %.3fs", row.param.c_str(), times[k]);
@@ -559,6 +686,12 @@ void draw_timeline(Timeline& tl, TimelineUI& ui, ShaderManager& shaders, Camera&
             ImGui::PopID();
         }
         if (structural_change) break;
+    }
+
+    // Marquee rectangle, over the keys it is selecting.
+    if (marquee_live) {
+        tdl->AddRectFilled(ImVec2(mq_x0, mq_y0), ImVec2(mq_x1, mq_y1), IM_COL32(130, 170, 255, 32));
+        tdl->AddRect(ImVec2(mq_x0, mq_y0), ImVec2(mq_x1, mq_y1), IM_COL32(130, 170, 255, 200));
     }
 
     // Playhead last so it draws over the keys.
