@@ -1195,7 +1195,22 @@ int main(int argc, char* argv[]) {
                 ImGui::SetTooltip("Fraction of a frame the shutter is open.\n"
                                   "0 = static poses (no motion blur).");
             }
+            static bool override_res = false;
+            static int res_wh[2] = {1920, 1080};
+            ImGui::Checkbox("Override resolution", &override_res);
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip("Render at an exact size instead of window x scale.\n"
+                                  "Shown centered in the window; larger than the window\n"
+                                  "shows a center crop. PNGs are always full size.");
+            }
+            if (override_res) {
+                ImGui::SameLine();
+                ImGui::SetNextItemWidth(140);
+                ImGui::InputInt2("##res_wh", res_wh);
+            }
+            ImGui::BeginDisabled(override_res);
             ImGui::SliderFloat("Render scale", &job.scale, 0.25f, 4.0f, "%.2fx");
+            ImGui::EndDisabled();
             ImGui::Checkbox("16-bit PNG", &job.png16);
             ImGui::EndDisabled();
 
@@ -1227,8 +1242,13 @@ int main(int argc, char* argv[]) {
                         job.frame_started_at = time;
                         // Even dimensions: the trace pass runs at exactly half
                         // resolution and an odd size would drop a column.
-                        job_w = (uint32_t)std::max(2.0f, backend.drawable_width() * job.scale) & ~1u;
-                        job_h = (uint32_t)std::max(2.0f, backend.drawable_height() * job.scale) & ~1u;
+                        if (override_res) {
+                            job_w = (uint32_t)std::clamp(res_wh[0], 2, 16384) & ~1u;
+                            job_h = (uint32_t)std::clamp(res_wh[1], 2, 16384) & ~1u;
+                        } else {
+                            job_w = (uint32_t)std::max(2.0f, backend.drawable_width() * job.scale) & ~1u;
+                            job_h = (uint32_t)std::max(2.0f, backend.drawable_height() * job.scale) & ~1u;
+                        }
                         timeline.playing = false;
                         job.active = true;
                         backend.set_vsync(false);

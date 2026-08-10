@@ -325,6 +325,25 @@ void MetalBackend::blit_to_screen(int source_texture_id) {
     if (source_texture_id < 0 || source_texture_id >= (int)impl->textures.size()) return;
     if (!impl->current_drawable) return;
 
+    id<MTLTexture> src = impl->textures[source_texture_id];
+    id<MTLTexture> dst = impl->current_drawable.texture;
+
+    // An off-size source (render scale, resolution override) covers only
+    // part of the drawable, and the ImGui pass loads previous contents — so
+    // the uncovered border would keep stale pixels and moving UI windows
+    // would smear trails there. Clear the whole drawable first. Exact-size
+    // sources overwrite every pixel and skip it.
+    if (src.width != dst.width || src.height != dst.height) {
+        MTLRenderPassDescriptor* clear_pass = [MTLRenderPassDescriptor renderPassDescriptor];
+        clear_pass.colorAttachments[0].texture = dst;
+        clear_pass.colorAttachments[0].loadAction = MTLLoadActionClear;
+        clear_pass.colorAttachments[0].storeAction = MTLStoreActionStore;
+        clear_pass.colorAttachments[0].clearColor = MTLClearColorMake(0.06, 0.06, 0.07, 1.0);
+        id<MTLRenderCommandEncoder> clr =
+            [impl->current_cmd_buffer renderCommandEncoderWithDescriptor:clear_pass];
+        [clr endEncoding];
+    }
+
     // Sampled like the compute passes. Encoder timestamps start when the
     // encoder executes — after the wait for the compositor to release the
     // drawable — so this measures the copy itself, and the vsync stall
@@ -343,22 +362,20 @@ void MetalBackend::blit_to_screen(int source_texture_id) {
         blit = [impl->current_cmd_buffer blitCommandEncoder];
     }
 
-    id<MTLTexture> src = impl->textures[source_texture_id];
-    id<MTLTexture> dst = impl->current_drawable.texture;
-
-    // If sizes match, direct copy. Otherwise copy the overlapping region.
+    // Centered both ways: a smaller render sits in the middle of the window,
+    // a larger one shows its center crop (blits can't scale).
     NSUInteger w = MIN(src.width, dst.width);
     NSUInteger h = MIN(src.height, dst.height);
 
     [blit copyFromTexture:src
               sourceSlice:0
               sourceLevel:0
-             sourceOrigin:MTLOriginMake(0, 0, 0)
+             sourceOrigin:MTLOriginMake((src.width - w) / 2, (src.height - h) / 2, 0)
                sourceSize:MTLSizeMake(w, h, 1)
                 toTexture:dst
          destinationSlice:0
          destinationLevel:0
-        destinationOrigin:MTLOriginMake(0, 0, 0)];
+        destinationOrigin:MTLOriginMake((dst.width - w) / 2, (dst.height - h) / 2, 0)];
 
     [blit endEncoding];
 }
