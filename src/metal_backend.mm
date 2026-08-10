@@ -7,6 +7,7 @@
 #include "imgui.h"
 #include "imgui_impl_metal.h"
 #include <atomic>
+#include <mutex>
 #include <vector>
 #include <string>
 
@@ -35,6 +36,18 @@ struct MetalBackend::Impl {
     // Written by the command buffer completed-handler (GPU-internal queue)
     std::atomic<double> gpu_ms{0.0};
 
+    // Per-pass GPU timing via stage-boundary timestamp samples. One sample
+    // buffer per in-flight frame, so the frame being resolved never shares
+    // storage with the one being encoded.
+    static constexpr int TS_MAX_SAMPLES = 32;   // 16 passes/frame
+    id<MTLCounterSampleBuffer> ts_buffers[MAX_FRAMES_IN_FLIGHT] = {};
+    bool ts_supported = false;
+    int  ts_slot = 0;                    // ring index, advanced in begin_frame
+    int  ts_cursor = 0;                  // samples used this frame
+    std::vector<std::string> ts_labels;  // label per sampled pass this frame
+    std::mutex ts_mutex;
+    std::vector<std::pair<std::string, double>> ts_results;  // last completed frame
+
     // Throttles the CPU to MAX_FRAMES_IN_FLIGHT. Without it the CPU can lap
     // the uniform ring and rewrite a slot the GPU is still reading — which
     // interactively only perturbs a converging average, but makes an offline
@@ -55,6 +68,28 @@ bool MetalBackend::init(SDL_Window* window) {
 
     impl->command_queue = [impl->device newCommandQueue];
     impl->frame_sem = dispatch_semaphore_create(MAX_FRAMES_IN_FLIGHT);
+
+    // Timestamp sampling at compute-pass boundaries (Apple silicon supports
+    // exactly this point). Missing support degrades to gpu_frame_ms only.
+    if ([impl->device supportsCounterSampling:MTLCounterSamplingPointAtStageBoundary]) {
+        id<MTLCounterSet> ts_set = nil;
+        for (id<MTLCounterSet> cs in impl->device.counterSets) {
+            if ([cs.name isEqualToString:MTLCommonCounterSetTimestamp]) { ts_set = cs; break; }
+        }
+        if (ts_set) {
+            MTLCounterSampleBufferDescriptor* d = [[MTLCounterSampleBufferDescriptor alloc] init];
+            d.counterSet = ts_set;
+            d.storageMode = MTLStorageModeShared;
+            d.sampleCount = Impl::TS_MAX_SAMPLES;
+            bool ok = true;
+            for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
+                NSError* err = nil;
+                impl->ts_buffers[i] = [impl->device newCounterSampleBufferWithDescriptor:d error:&err];
+                if (!impl->ts_buffers[i]) { ok = false; break; }
+            }
+            impl->ts_supported = ok;
+        }
+    }
 
     // Create Metal view and extract layer
     impl->metal_view = SDL_Metal_CreateView(window);
@@ -246,12 +281,31 @@ void MetalBackend::begin_frame() {
     if (impl->frame_sem) dispatch_semaphore_wait(impl->frame_sem, DISPATCH_TIME_FOREVER);
     impl->current_drawable = [impl->metal_layer nextDrawable];
     impl->current_cmd_buffer = [impl->command_queue commandBuffer];
+
+    // The wait above guarantees the frame that last used this ring slot's
+    // timestamp buffer has fully retired (and resolved it).
+    impl->ts_slot = (impl->ts_slot + 1) % MAX_FRAMES_IN_FLIGHT;
+    impl->ts_cursor = 0;
+    impl->ts_labels.clear();
 }
 
 void MetalBackend::dispatch(const DispatchParams& params) {
     if (params.pipeline_id < 0 || params.pipeline_id >= (int)impl->pipelines.size()) return;
 
-    id<MTLComputeCommandEncoder> enc = [impl->current_cmd_buffer computeCommandEncoder];
+    // Bracket the pass with timestamp samples when the device can.
+    id<MTLComputeCommandEncoder> enc;
+    if (impl->ts_supported && impl->ts_cursor + 2 <= Impl::TS_MAX_SAMPLES) {
+        MTLComputePassDescriptor* pd = [MTLComputePassDescriptor computePassDescriptor];
+        MTLComputePassSampleBufferAttachmentDescriptor* att = pd.sampleBufferAttachments[0];
+        att.sampleBuffer = impl->ts_buffers[impl->ts_slot];
+        att.startOfEncoderSampleIndex = impl->ts_cursor;
+        att.endOfEncoderSampleIndex = impl->ts_cursor + 1;
+        impl->ts_cursor += 2;
+        impl->ts_labels.push_back(params.label ? params.label : "pass");
+        enc = [impl->current_cmd_buffer computeCommandEncoderWithDescriptor:pd];
+    } else {
+        enc = [impl->current_cmd_buffer computeCommandEncoder];
+    }
     [enc setComputePipelineState:impl->pipelines[params.pipeline_id]];
 
     for (int i = 0; i < (int)params.textures.size(); i++) {
@@ -332,14 +386,44 @@ void MetalBackend::end_frame() {
     }
     Impl* imp = impl.get();
     dispatch_semaphore_t sem = impl->frame_sem;
+    // Copies captured by the block: the members mutate as the next frame
+    // encodes while this handler waits on the GPU.
+    int ts_slot = impl->ts_slot;
+    int ts_count = impl->ts_cursor / 2;
+    std::vector<std::string> ts_labels = impl->ts_labels;
     [impl->current_cmd_buffer addCompletedHandler:^(id<MTLCommandBuffer> cb) {
         imp->gpu_ms.store((cb.GPUEndTime - cb.GPUStartTime) * 1000.0);
+        // Resolve this frame's pass timestamps (Apple GPUs report them in
+        // nanoseconds). Runs before the semaphore signal, so the slot can't
+        // be re-encoded while we read it.
+        if (imp->ts_supported && ts_count > 0) {
+            NSData* data = [imp->ts_buffers[ts_slot]
+                resolveCounterRange:NSMakeRange(0, (NSUInteger)ts_count * 2)];
+            if (data && data.length >= sizeof(MTLCounterResultTimestamp) * ts_count * 2) {
+                auto* ts = (const MTLCounterResultTimestamp*)data.bytes;
+                std::vector<std::pair<std::string, double>> res;
+                res.reserve(ts_count);
+                for (int i = 0; i < ts_count; i++) {
+                    uint64_t t0 = ts[i * 2].timestamp;
+                    uint64_t t1 = ts[i * 2 + 1].timestamp;
+                    bool valid = t0 != MTLCounterErrorValue && t1 != MTLCounterErrorValue && t1 > t0;
+                    res.emplace_back(ts_labels[i], valid ? (double)(t1 - t0) / 1.0e6 : 0.0);
+                }
+                std::lock_guard<std::mutex> lock(imp->ts_mutex);
+                imp->ts_results = std::move(res);
+            }
+        }
         if (sem) dispatch_semaphore_signal(sem);
     }];
     [impl->current_cmd_buffer commit];
     impl->last_cmd_buffer = impl->current_cmd_buffer;
     impl->current_drawable = nil;
     impl->current_cmd_buffer = nil;
+}
+
+std::vector<std::pair<std::string, double>> MetalBackend::gpu_pass_ms() const {
+    std::lock_guard<std::mutex> lock(impl->ts_mutex);
+    return impl->ts_results;
 }
 
 void MetalBackend::wait_last_frame() {

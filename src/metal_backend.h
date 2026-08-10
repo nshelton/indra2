@@ -2,6 +2,7 @@
 #include "types.h"
 #include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
 struct SDL_Window;
@@ -44,6 +45,7 @@ public:
         uint32_t threadgroup_h = 16;
         std::vector<int> textures;
         std::vector<int> buffers;
+        const char* label = nullptr;  // names this pass in gpu_pass_ms()
     };
 
     // ImGui lifecycle (wraps ObjC ImGui Metal backend)
@@ -76,6 +78,14 @@ public:
 
     // GPU execution time of the most recently completed frame, in ms
     float gpu_frame_ms() const;
+
+    // Per-compute-pass GPU times of the most recently completed frame, in
+    // dispatch order, labeled by DispatchParams::label. Measured with
+    // stage-boundary counter samples; empty when the device can't sample
+    // there (then only gpu_frame_ms is available). Blits and the ImGui
+    // render pass aren't sampled — the gap between this sum and
+    // gpu_frame_ms is exactly that overhead.
+    std::vector<std::pair<std::string, double>> gpu_pass_ms() const;
 
     // Type-erased Metal pointers (for external use if needed)
     void* raw_device() const;

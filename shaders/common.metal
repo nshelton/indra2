@@ -91,6 +91,13 @@ void sphere_fold(thread float3& p, thread float& dr, float min_r2, float fixed_r
 //
 // min_radius and fixed_radius are both the *squared* radii of the sphere
 // fold, matching the classic mandelbox parameterization (0.25 / 1.0).
+//
+// ORBIT compiles the orbit-trap accumulation in or out. The trap costs a
+// sqrt (or a length+add) per IFS iteration, and only the hit point's value
+// is ever consumed — so trace() marches with ORBIT=false and pays for one
+// full eval at the hit instead of dragging the trap through every step.
+// Returns (distance, orbit); .y is 0 when ORBIT is false.
+template <bool ORBIT>
 float2 tglad(float3 z0, constant FrameUniforms& frame)
 {
     int levels = int(frame.params[7].x);
@@ -117,7 +124,7 @@ float2 tglad(float3 z0, constant FrameUniforms& frame)
         z *= scale / clamp(dot(z.xyz, z.xyz), min_r2, fixed_r2);
         z.xyz = rot * z.xyz;
         z += p0;
-        orbit += length(start - z.xyz);
+        if (ORBIT) orbit += length(start - z.xyz);
     }
 
     float dS = length(max(abs(z.xyz) - box_dims, 0)) / z.w;
@@ -125,6 +132,7 @@ float2 tglad(float3 z0, constant FrameUniforms& frame)
 }
 
 // Param slots continued: [8] fractal, [9] power, [10] csize, [11] ksize
+template <bool ORBIT>
 float2 mandelbulb(float3 pos, constant FrameUniforms& frame) {
     int levels = int(frame.params[7].x);
     float power = frame.params[9].x;
@@ -137,7 +145,7 @@ float2 mandelbulb(float3 pos, constant FrameUniforms& frame) {
     for (int i = 0; i < levels; i++) {
         r = length(z);
         if (r > 2.0 || r < 1e-9) break;
-        orbit = min(orbit, r);
+        if (ORBIT) orbit = min(orbit, r);
 
         float theta = acos(z.z / r) * power;
         float phi = atan2(z.y, z.x) * power;
@@ -151,6 +159,7 @@ float2 mandelbulb(float3 pos, constant FrameUniforms& frame) {
     return float2(0.5 * log(r) * r / dr, orbit);
 }
 
+template <bool ORBIT>
 float2 mandelbox(float3 pos, constant FrameUniforms& frame) {
     int levels = int(frame.params[7].x);
     float s = frame.params[0].x;
@@ -173,12 +182,13 @@ float2 mandelbox(float3 pos, constant FrameUniforms& frame) {
         // dr's running derivative needs no change for either.
         z = s * z + pos + off;
         dr = dr * abs(s) + 1.0;
-        orbit = min(orbit, length(z));
+        if (ORBIT) orbit = min(orbit, length(z));
     }
 
     return float2(length(z) / abs(dr), orbit);
 }
 
+template <bool ORBIT>
 float2 menger(float3 pos, constant FrameUniforms& frame) {
     int levels = int(frame.params[7].x);
     float s = frame.params[0].x;
@@ -198,12 +208,13 @@ float2 menger(float3 pos, constant FrameUniforms& frame) {
         z = z * s - off * (s - 1.0);
         if (z.z < -0.5 * off.z * (s - 1.0)) z.z += off.z * (s - 1.0);
         dr *= abs(s);
-        orbit = min(orbit, length(z));
+        if (ORBIT) orbit = min(orbit, length(z));
     }
 
     return float2(sd_box(z, float3(1.0)) / dr, orbit);
 }
 
+template <bool ORBIT>
 float2 pkleinian(float3 pos, constant FrameUniforms& frame) {
     int levels = int(frame.params[7].x);
     float3 csize = frame.params[10].xyz;
@@ -221,7 +232,7 @@ float2 pkleinian(float3 pos, constant FrameUniforms& frame) {
         p *= k;
         defactor *= k;
         p += c;
-        orbit = min(orbit, length(p));
+        if (ORBIT) orbit = min(orbit, length(p));
     }
 
     return float2(0.5 * abs(p.z) / defactor, orbit);
@@ -232,6 +243,7 @@ float2 pkleinian(float3 pos, constant FrameUniforms& frame) {
 // The result is self-similar because each iteration re-runs the same map on
 // an ever-smaller copy of space. dr tracks the total stretch so the distance
 // to the base shape (a unit box) can be converted back to world units.
+template <bool ORBIT>
 float2 simple(float3 pos, constant FrameUniforms& frame) {
     int levels = int(frame.params[7].x);
     float s = frame.params[0].x;
@@ -248,31 +260,32 @@ float2 simple(float3 pos, constant FrameUniforms& frame) {
         z = rot * z;                  // twist (identity when rotation = 0)
         z = z * s - off * (s - 1.0);  // scale about the point `off`
         dr *= abs(s);
-        orbit = min(orbit, length(z.xz));  // line trap: distance to the y axis
+        if (ORBIT) orbit = min(orbit, length(z.xz));  // line trap: distance to the y axis
     }
 
     return float2(sd_box(z, box_dims) / dr, orbit);
 }
 
+template <bool ORBIT = true>
 float2 DE(float3 p, constant FrameUniforms& frame) {
     switch (int(frame.params[8].x)) {
-        case 1:  return mandelbulb(p, frame);
-        case 2:  return mandelbox(p, frame);
-        case 3:  return menger(p, frame);
-        case 4:  return pkleinian(p, frame);
-        case 5:  return simple(p, frame);
-        default: return tglad(p, frame);
+        case 1:  return mandelbulb<ORBIT>(p, frame);
+        case 2:  return mandelbox<ORBIT>(p, frame);
+        case 3:  return menger<ORBIT>(p, frame);
+        case 4:  return pkleinian<ORBIT>(p, frame);
+        case 5:  return simple<ORBIT>(p, frame);
+        default: return tglad<ORBIT>(p, frame);
     }
 }
 
 float3 calc_normal(float3 p, float t, constant FrameUniforms& frame) {
-    // Tetrahedron gradient: 4 DE taps instead of 6
+    // Tetrahedron gradient: 4 DE taps instead of 6, none needing the trap
     float eps = 0.0001 * t;
     const float2 k = float2(1, -1);
-    float3 g = k.xyy * DE(p + k.xyy * eps, frame).x +
-               k.yyx * DE(p + k.yyx * eps, frame).x +
-               k.yxy * DE(p + k.yxy * eps, frame).x +
-               k.xxx * DE(p + k.xxx * eps, frame).x;
+    float3 g = k.xyy * DE<false>(p + k.xyy * eps, frame).x +
+               k.yyx * DE<false>(p + k.yyx * eps, frame).x +
+               k.yxy * DE<false>(p + k.yxy * eps, frame).x +
+               k.xxx * DE<false>(p + k.xxx * eps, frame).x;
     // Fold seams and eps underflow at tiny t can zero the gradient;
     // normalize(0) is NaN and would poison the accumulator.
     float len = length(g);
@@ -303,7 +316,6 @@ TraceResult trace(float3 origin, float3 dir, constant FrameUniforms& frame,
                   int max_steps, float min_dist, float lod_scale, float t_start) {
     float lod = frame.params[16].x * lod_scale;  // slot 16: lod_factor
     float t = t_start;
-    float orbit = 0;
     int i = 0;
     for (; i < max_steps; i++) {
         float3 p = origin + dir * t;
@@ -313,17 +325,20 @@ TraceResult trace(float3 origin, float3 dir, constant FrameUniforms& frame,
             t = TRACE_MAX_DIST + 1.0;
             break;
         }
-        float2 d = DE(p, frame);
-        orbit = d.y;
-        if (d.x < (min_dist + float(i) * lod) * t) break;
+        float d = DE<false>(p, frame).x;
+        if (d < (min_dist + float(i) * lod) * t) break;
         if (t > TRACE_MAX_DIST) break;
-        t += d.x * frame.params[3].x;
+        t += d * frame.params[3].x;
     }
 
     TraceResult r;
     r.t = t;
     r.steps = i;
-    r.orbit = orbit;
+    // The trap is only consumed at a hit, and only the hit point's value —
+    // the loop breaks before advancing t, so this re-evaluates exactly the
+    // point the old per-step accumulation would have reported. One full DE
+    // here beats carrying the trap through every march step.
+    r.orbit = (t < TRACE_MAX_DIST) ? DE<true>(origin + dir * t, frame).y : 0.0;
     return r;
 }
 

@@ -659,7 +659,8 @@ int main(int argc, char* argv[]) {
                 .threadgroup_w = 16,
                 .threadgroup_h = 16,
                 .textures = {tex_current_color, tex_current_depth, depth_read},
-                .buffers = {buf_u}
+                .buffers = {buf_u},
+                .label = renderer_mode == 1 ? "pathtrace" : "raymarch"
             });
         }
 
@@ -686,7 +687,8 @@ int main(int argc, char* argv[]) {
                 .threadgroup_w = 16,
                 .threadgroup_h = 16,
                 .textures = {tex_current_color, tex_current_depth, history_read, history_write, depth_read, depth_write},
-                .buffers = {buf_u}
+                .buffers = {buf_u},
+                .label = "reconstruct"
             });
         }
 
@@ -707,7 +709,8 @@ int main(int argc, char* argv[]) {
                 .threadgroup_w = 16,
                 .threadgroup_h = 16,
                 .textures = {ping ? tex_history_a : tex_history_b, tex_output},
-                .buffers = {buf_u}
+                .buffers = {buf_u},
+                .label = "present"
             });
         }
 
@@ -790,6 +793,26 @@ int main(int argc, char* argv[]) {
             snprintf(overlay, sizeof(overlay), "GPU %.2f ms", gpu_avg);
             ImGui::PlotLines("##gputime", gpu_buf, FT_SAMPLES, gpu_idx, overlay,
                              0.0f, 33.3f, ImVec2(0, 40));
+
+            // Per-pass GPU breakdown (stage-boundary timestamps). Smoothed
+            // like the totals; keyed by label so a pass that skips a frame
+            // (sample throttle) just holds its last value. The remainder to
+            // the GPU total is the unsampled work: blits + ImGui.
+            static std::vector<std::pair<std::string, float>> pass_avg;
+            double pass_sum = 0.0;
+            for (const auto& [label, ms] : backend.gpu_pass_ms()) {
+                pass_sum += ms;
+                auto it = std::find_if(pass_avg.begin(), pass_avg.end(),
+                                       [&](const auto& e) { return e.first == label; });
+                if (it == pass_avg.end()) it = pass_avg.insert(pass_avg.end(), {label, (float)ms});
+                it->second += ((float)ms - it->second) * 0.05f;
+                ImGui::Text("  %-11s %5.2f ms", label.c_str(), it->second);
+            }
+            if (pass_sum > 0.0) {
+                static float other_avg = 0;
+                other_avg += ((float)(gpu_ms - pass_sum) - other_avg) * 0.05f;
+                ImGui::Text("  %-11s %5.2f ms", "blit+ui", std::max(other_avg, 0.0f));
+            }
         }
         ImGui::Text("Resolution: %u x %u", w, h);
         {

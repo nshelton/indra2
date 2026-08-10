@@ -3,6 +3,7 @@
 // @param sky_zenith color3 0 0 0 1 1 1 0.2 0.4 0.8
 // @param sky_intensity float 0.0 10.0 1.0
 // @param sample_stride int 1 4 1
+// @param debug_view enum off primary_steps total_steps                       @group Debug
 
 uint pcg(uint v) {
     uint state = v * 747796405u + 2891336453u;
@@ -68,11 +69,16 @@ kernel void pathtrace_kernel(
     // frame's reconstructed depth instead of marching from the origin.
     float t_seed = seed_primary_t(prev_depth, pixel, frame);
 
+    int primary_steps = 0;
+    int total_steps = 0;
+
     for (int bounce = 0; bounce < max_bounces; bounce++) {
         // Bounce rays carry low-frequency diffuse GI — march them with a
         // smaller step budget, looser epsilon, and coarser LOD than primaries.
         TraceResult tr = (bounce == 0) ? trace(ro, rd, frame, 128, 0.0001, 1.0, t_seed)
                                        : trace(ro, rd, frame, 64, 0.0006, 4.0, 0.0);
+        total_steps += tr.steps;
+        if (bounce == 0) primary_steps = tr.steps;
 
         if (tr.t >= TRACE_MAX_DIST) {
             radiance += throughput * sky(rd, frame);
@@ -110,6 +116,20 @@ kernel void pathtrace_kernel(
     // NaN/negative guard via min/max, which drop NaN operands (arithmetic
     // doesn't) — one bad sample would poison the unclamped accumulator forever.
     radiance = min(max(radiance, float3(0.0)), float3(1e4));
+
+    // March-cost heatmaps (blue = cheap, red = expensive). Written as
+    // ordinary radiance so it flows through TAA and present like any image —
+    // it converges under accumulation, and the uniform branch is free when
+    // off. primary_steps shows where the camera rays burn budget
+    // (silhouettes, grazing angles); total_steps adds the bounce rays.
+    int debug_view = int(frame.pt_params[5].x);
+    if (debug_view != 0) {
+        float u = (debug_view == 1) ? float(primary_steps) / 128.0
+                                    : float(total_steps) / 256.0;
+        u = clamp(u, 0.0, 1.0);
+        radiance = u < 0.5 ? mix(float3(0.0, 0.0, 0.25), float3(0.0, 0.9, 0.1), u * 2.0)
+                           : mix(float3(0.0, 0.9, 0.1), float3(1.0, 0.05, 0.0), u * 2.0 - 1.0);
+    }
 
     out_color.write(float4(radiance, pack_offset(frame.jitter)), pixel);
     out_depth.write(float4(depth, 0, 0, 0), pixel);
