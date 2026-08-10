@@ -203,7 +203,7 @@ void Timeline::clear() {
 
 // ---- Evaluation ----
 
-void Timeline::eval_camera(float t, Camera& cam) const {
+void Timeline::eval_camera_channels(float t, CameraKey& out) const {
     if (cam_keys.empty()) return;
 
     const CameraKey* a = &cam_keys.front();
@@ -223,18 +223,16 @@ void Timeline::eval_camera(float t, Camera& cam) const {
         if (a->interp == Interp::Step) u = 0.0f;
     }
 
-    float target[3], dir[3], log_dist, fov;
-
     if (a == b || a->interp == Interp::Step) {
-        std::memcpy(target, a->target, sizeof(float) * 3);
-        std::memcpy(dir, a->dir, sizeof(float) * 3);
-        log_dist = a->log_dist;
-        fov = a->fov;
+        std::memcpy(out.target, a->target, sizeof(float) * 3);
+        std::memcpy(out.dir, a->dir, sizeof(float) * 3);
+        out.log_dist = a->log_dist;
+        out.fov = a->fov;
     } else if (a->interp == Interp::Linear) {
-        v3::lerp(a->target, b->target, u, target);
-        v3::slerp(a->dir, b->dir, u, dir);
-        log_dist = a->log_dist + (b->log_dist - a->log_dist) * u;
-        fov = a->fov + (b->fov - a->fov) * u;
+        v3::lerp(a->target, b->target, u, out.target);
+        v3::slerp(a->dir, b->dir, u, out.dir);
+        out.log_dist = a->log_dist + (b->log_dist - a->log_dist) * u;
+        out.fov = a->fov + (b->fov - a->fov) * u;
     } else {
         // Catmull-Rom the target and scalars, slerp the direction. Direction
         // stays a two-key slerp on purpose: a spline through unit vectors
@@ -243,19 +241,25 @@ void Timeline::eval_camera(float t, Camera& cam) const {
         const CameraKey& k0 = (i >= 2)               ? cam_keys[i - 2] : *a;
         const CameraKey& k3 = (i + 1 < cam_keys.size()) ? cam_keys[i + 1] : *b;
         for (int c = 0; c < 3; c++) {
-            target[c] = catmull_rom(k0.target[c], a->target[c], b->target[c], k3.target[c], u);
+            out.target[c] = catmull_rom(k0.target[c], a->target[c], b->target[c], k3.target[c], u);
         }
-        v3::slerp(a->dir, b->dir, u, dir);
+        v3::slerp(a->dir, b->dir, u, out.dir);
         // log-space so a zoom covers a constant *ratio* per second. Linear
         // world-space distance across orders of magnitude is a lunge then a
         // crawl — the whole point of fractal flythroughs is the constant rate.
-        log_dist = catmull_rom(k0.log_dist, a->log_dist, b->log_dist, k3.log_dist, u);
-        fov      = catmull_rom(k0.fov, a->fov, b->fov, k3.fov, u);
+        out.log_dist = catmull_rom(k0.log_dist, a->log_dist, b->log_dist, k3.log_dist, u);
+        out.fov      = catmull_rom(k0.fov, a->fov, b->fov, k3.fov, u);
     }
+    out.t = t;
+}
 
-    std::memcpy(cam.target, target, sizeof(float) * 3);
-    cam.fov = fov;
-    v3::mad(cam.target, dir, std::exp(log_dist), cam.pos);
+void Timeline::eval_camera(float t, Camera& cam) const {
+    if (cam_keys.empty()) return;
+    CameraKey s;
+    eval_camera_channels(t, s);
+    std::memcpy(cam.target, s.target, sizeof(float) * 3);
+    cam.fov = s.fov;
+    v3::mad(cam.target, s.dir, std::exp(s.log_dist), cam.pos);
 }
 
 void Timeline::apply(float t, ShaderManager& shaders, Camera& cam) const {

@@ -110,6 +110,174 @@ void sort_all_keys(Timeline& tl) {
               [](const CameraKey& a, const CameraKey& b) { return a.t < b.t; });
 }
 
+// ---- Camera curve editor ----
+// All eight camera channels as curves. Each channel normalizes to its own
+// key range: target coordinates, log-distance and fov live on wildly
+// different scales, and a shared axis would flatten most of them to lines.
+
+struct CamChannel { const char* name; ImU32 col; };
+constexpr CamChannel CAM_CHANNELS[8] = {
+    {"tgt.x", IM_COL32(235, 96, 96, 255)},
+    {"tgt.y", IM_COL32(110, 220, 110, 255)},
+    {"tgt.z", IM_COL32(120, 160, 250, 255)},
+    {"dir.x", IM_COL32(205, 140, 140, 255)},
+    {"dir.y", IM_COL32(150, 200, 150, 255)},
+    {"dir.z", IM_COL32(155, 175, 225, 255)},
+    {"log_d", IM_COL32(230, 200, 90, 255)},
+    {"fov",   IM_COL32(210, 130, 235, 255)},
+};
+
+float cam_channel_get(const CameraKey& k, int c) {
+    switch (c) {
+        case 0: case 1: case 2: return k.target[c];
+        case 3: case 4: case 5: return k.dir[c - 3];
+        case 6: return k.log_dist;
+        default: return k.fov;
+    }
+}
+
+void cam_channel_set(CameraKey& k, int c, float v) {
+    if (c < 3) {
+        k.target[c] = v;
+    } else if (c < 6) {
+        // dir lives on the unit sphere: write the component, renormalize.
+        // The drag fights the normalization a little, but the stored key is
+        // always valid. A degenerate edit keeps the previous axis.
+        k.dir[c - 3] = v;
+        float len = std::sqrt(k.dir[0] * k.dir[0] + k.dir[1] * k.dir[1] + k.dir[2] * k.dir[2]);
+        if (len > 1e-6f) { k.dir[0] /= len; k.dir[1] /= len; k.dir[2] /= len; }
+    } else if (c == 6) {
+        k.log_dist = v;
+    } else {
+        k.fov = std::clamp(v, 0.05f, 3.0f);
+    }
+}
+
+// Legend + toggles down the label column, curves and draggable keys to the
+// right. Horizontal key drag moves the key in time (all channels — it is one
+// key); vertical edits the grabbed channel. Returns true on any mutation.
+bool draw_camera_curves(Timeline& tl, TimelineUI& ui, Camera& cam, ImDrawList* dl,
+                        ImVec2 cp, float cw, float view_start, float view_end, float ft) {
+    float span = std::max(view_end - view_start, 1e-6f);
+    float cx0 = cp.x + LABEL_W;
+    float cvw = cw - LABEL_W;
+    auto t_to_x = [&](float t) { return cx0 + (t - view_start) / span * cvw; };
+    auto x_to_t = [&](float x) { return view_start + (x - cx0) / cvw * span; };
+    auto snap = [&](float t) {
+        if (ImGui::GetIO().KeyShift) return t;
+        return std::round(t / ft) * ft;
+    };
+
+    // Per-channel value range over the keys, padded; flat channels get ±0.5.
+    float cmin[8], cmax[8];
+    for (int c = 0; c < 8; c++) { cmin[c] = 1e9f; cmax[c] = -1e9f; }
+    for (const auto& k : tl.cam_keys) {
+        for (int c = 0; c < 8; c++) {
+            float v = cam_channel_get(k, c);
+            cmin[c] = std::min(cmin[c], v);
+            cmax[c] = std::max(cmax[c], v);
+        }
+    }
+    for (int c = 0; c < 8; c++) {
+        if (cmax[c] - cmin[c] < 1e-6f) { cmin[c] -= 0.5f; cmax[c] += 0.5f; }
+        float pad = (cmax[c] - cmin[c]) * 0.08f;
+        cmin[c] -= pad;
+        cmax[c] += pad;
+    }
+    auto v_to_y = [&](int c, float v) {
+        return cp.y + CURVE_H - (v - cmin[c]) / (cmax[c] - cmin[c]) * CURVE_H;
+    };
+    auto y_to_v = [&](int c, float y) {
+        return cmin[c] + (cp.y + CURVE_H - y) / CURVE_H * (cmax[c] - cmin[c]);
+    };
+
+    // Channel legend/toggles in the label column.
+    for (int c = 0; c < 8; c++) {
+        ImGui::SetCursorScreenPos(ImVec2(cp.x + 6, cp.y + 4 + c * 21.0f));
+        bool on = (ui.cam_mask >> c) & 1u;
+        ImGui::PushID(50000 + c);
+        ImGui::PushStyleColor(ImGuiCol_Text, CAM_CHANNELS[c].col);
+        ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(0, 0));
+        if (ImGui::Checkbox(CAM_CHANNELS[c].name, &on)) {
+            ui.cam_mask = on ? (ui.cam_mask | (1u << c)) : (ui.cam_mask & ~(1u << c));
+        }
+        ImGui::PopStyleVar();
+        ImGui::PopStyleColor();
+        ImGui::PopID();
+    }
+
+    // Curves through eval_camera_channels — the code playback runs, so slerp
+    // kinks and step holds appear exactly as they will render.
+    int steps = (int)std::min(cvw, 384.0f);
+    std::vector<ImVec2> pts;
+    CameraKey s;
+    for (int c = 0; c < 8; c++) {
+        if (!((ui.cam_mask >> c) & 1u)) continue;
+        pts.clear();
+        pts.reserve(steps + 1);
+        for (int i = 0; i <= steps; i++) {
+            float t = view_start + span * ((float)i / (float)steps);
+            tl.eval_camera_channels(t, s);
+            pts.push_back(ImVec2(t_to_x(t), v_to_y(c, cam_channel_get(s, c))));
+        }
+        dl->AddPolyline(pts.data(), (int)pts.size(), CAM_CHANNELS[c].col, 0, 1.4f);
+    }
+
+    bool mutated = false;
+    for (int c = 0; c < 8; c++) {
+        if (!((ui.cam_mask >> c) & 1u)) continue;
+        for (size_t k = 0; k < tl.cam_keys.size(); k++) {
+            CameraKey& ck = tl.cam_keys[k];
+            float x = t_to_x(ck.t);
+            float y = v_to_y(c, cam_channel_get(ck, c));
+            if (x < cx0 - 8 || x > cx0 + cvw + 8) continue;
+            ImGui::PushID(60000 + c * 4096 + (int)k);
+            ImGui::SetCursorScreenPos(ImVec2(x - KEY_R, y - KEY_R));
+            ImGui::InvisibleButton("##cck", ImVec2(KEY_R * 2, KEY_R * 2));
+            if (ImGui::IsItemActivated()) ui.sel_key = (int)k;
+            if (ImGui::IsItemActive() && ImGui::IsMouseDragging(ImGuiMouseButton_Left)) {
+                ck.t = std::clamp(snap(x_to_t(ImGui::GetIO().MousePos.x)), 0.0f, tl.duration);
+                cam_channel_set(ck, c, y_to_v(c, ImGui::GetIO().MousePos.y));
+                mutated = true;
+            }
+            if (ImGui::IsItemDeactivatedAfterEdit()) {
+                std::sort(tl.cam_keys.begin(), tl.cam_keys.end(),
+                          [](const CameraKey& a, const CameraKey& b) { return a.t < b.t; });
+            }
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip("%s @ %.3fs = %.4f", CAM_CHANNELS[c].name, ck.t,
+                                  cam_channel_get(ck, c));
+            }
+            bool del = false;
+            if (ImGui::BeginPopupContextItem("##cckm")) {
+                ImGui::TextDisabled("camera key %.3fs", ck.t);
+                ImGui::Separator();
+                if (interp_menu(ck.interp)) mutated = true;
+                ImGui::Separator();
+                if (ImGui::MenuItem("Go to")) tl.playhead = ck.t;
+                if (ImGui::MenuItem("Replace with current pose")) {
+                    tl.key_camera(ck.t, cam);
+                    mutated = true;
+                }
+                if (ImGui::MenuItem("Delete")) del = true;
+                ImGui::EndPopup();
+            }
+            bool sel = ck.selected || (ui.sel_camera && ui.sel_key == (int)k);
+            draw_diamond(dl, ImVec2(x, y), KEY_R - 1.0f,
+                         sel ? COL_KEY_SEL : CAM_CHANNELS[c].col, COL_KEY_EDGE);
+            ImGui::PopID();
+            if (del) {
+                tl.remove_camera_key((int)k);
+                ui.sel_key = -1;
+                // Key indices are stale for every diamond after this one —
+                // bail and let the next frame rebuild.
+                return true;
+            }
+        }
+    }
+    return mutated;
+}
+
 // Every ShaderParam the timeline can see, in shader declaration order.
 void collect_rows(Timeline& tl, TimelineUI& ui, ShaderManager& shaders, std::vector<Row>& rows) {
     rows.push_back({Row::Camera, "", "", "Camera", "", -1, -1, nullptr});
@@ -724,6 +892,28 @@ void draw_timeline(Timeline& tl, TimelineUI& ui, ShaderManager& shaders, Camera&
     float cw = canvas_w;
     dl = ImGui::GetWindowDrawList();
     dl->AddRectFilled(cp, ImVec2(cp.x + cw, cp.y + CURVE_H), COL_BG);
+
+    // Camera mode: selecting a camera key flips the curve view to the eight
+    // camera channels. Selecting a param key flips it back.
+    if (ui.sel_camera && !tl.cam_keys.empty()) {
+        ImGui::SetCursorScreenPos(cp);
+        ImGui::SetNextItemAllowOverlap();
+        ImGui::InvisibleButton("##curvebg", ImVec2(cw, CURVE_H));
+        dl->PushClipRect(cp, ImVec2(cp.x + cw, cp.y + CURVE_H), true);
+        if (draw_camera_curves(tl, ui, cam, dl, cp, cw, ui.view_start, ui.view_end, ft)) {
+            tl.revision++;
+        }
+        {
+            float px = t_to_x(tl.playhead);
+            if (px >= cp.x + LABEL_W && px <= cp.x + cw) {
+                dl->AddLine(ImVec2(px, cp.y), ImVec2(px, cp.y + CURVE_H), COL_PLAYHEAD, 1.5f);
+            }
+        }
+        dl->PopClipRect();
+        dl->AddRect(cp, ImVec2(cp.x + cw, cp.y + CURVE_H), COL_GRID);
+        ImGui::SetCursorScreenPos(ImVec2(cp.x, cp.y + CURVE_H));
+        return;
+    }
 
     // Which tracks to show: the selected key's param, else the first group.
     std::string cur_shader, cur_param;

@@ -110,6 +110,10 @@ struct Timeline {
     // values through the paths it already uses.
     void   apply(float t, ShaderManager& shaders, Camera& cam) const;
     void   eval_camera(float t, Camera& cam) const;
+    // The interpolated channels (target/dir/log_dist/fov) at t, before they
+    // compose into a pos. The camera curve editor plots exactly these, so
+    // what it shows is what playback computes — slerp kinks included.
+    void   eval_camera_channels(float t, CameraKey& out) const;
 
     // --- Serialization ---
     // to_json/from_json are the reusable value: the same block is written
@@ -144,6 +148,10 @@ struct TimelineUI {
     bool  marquee = false;
     float marquee_x0 = 0.0f, marquee_y0 = 0.0f;
     float drag_accum = 0.0f, drag_applied = 0.0f;
+
+    // Camera curve editor: visibility bitmask over the 8 channels
+    // (tgt.xyz, dir.xyz, log_dist, fov).
+    unsigned cam_mask = 0xFFu;
 
     // Groups expanded to their per-component rows, keyed "shader|param".
     std::vector<std::string> expanded;
