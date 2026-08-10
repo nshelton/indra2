@@ -87,7 +87,7 @@ void sphere_fold(thread float3& p, thread float& dr, float min_r2, float fixed_r
 // Param slots (declared in raymarch.metal): [0] scale, [1] offset,
 // [2] rotation, [3] marchRatio, [4] fold_limit, [5] min_radius,
 // [6] box_dims, [7] levels ([8]+ continue below; [16] lod_factor,
-// [17]+ material, [23] fixed_radius, [24] box_offset)
+// [17]+ material, [23] fixed_radius)
 //
 // min_radius and fixed_radius are both the *squared* radii of the sphere
 // fold, matching the classic mandelbox parameterization (0.25 / 1.0).
@@ -157,10 +157,7 @@ float2 mandelbox(float3 pos, constant FrameUniforms& frame) {
     float fold_limit = frame.params[4].x;
     float min_r2 = frame.params[5].x;
     float fixed_r2 = frame.params[23].x;
-    // Own slot, not the shared params[1] offset: that one's default (and
-    // whatever value the other fractals were noodled to) is tglad-flavored,
-    // and the mandelbox should rest at the classic box, off = 0.
-    float3 off = frame.params[24].xyz;
+    float3 off = frame.params[1].xyz;
     float3x3 rot = float3x3(frame.rot_mtx[0].xyz, frame.rot_mtx[1].xyz, frame.rot_mtx[2].xyz);
 
     float3 z = pos;
