@@ -162,9 +162,21 @@ void draw_timeline(Timeline& tl, TimelineUI& ui, ShaderManager& shaders, Camera&
     collect_rows(tl, ui, shaders, rows);
 
     // ---- Canvas geometry ----
+    // The ruler is the animation: a full-span view follows duration edits,
+    // and the view never extends past [0, duration] — keys can't live out
+    // there, so there is nothing to show.
+    const float full = std::max(tl.duration, 0.1f);
+    bool was_full = ui.view_start <= 1e-4f && ui.view_end == ui.fitted_duration;
+    if (ui.fitted_duration < 0.0f || was_full) {
+        ui.view_start = 0.0f;
+        ui.view_end   = full;
+    }
+    ui.fitted_duration = full;
+    ui.view_start = std::clamp(ui.view_start, 0.0f, full);
+    ui.view_end   = std::clamp(ui.view_end,   0.0f, full);
     if (ui.view_end <= ui.view_start + 1e-4f) {
         ui.view_start = 0.0f;
-        ui.view_end = std::max(tl.duration, 1.0f);
+        ui.view_end   = full;
     }
     ImVec2 canvas_p = ImGui::GetCursorScreenPos();
     float canvas_w = std::max(ImGui::GetContentRegionAvail().x, LABEL_W + 60.0f);
@@ -196,19 +208,30 @@ void draw_timeline(Timeline& tl, TimelineUI& ui, ShaderManager& shaders, Camera&
     }
 
     // Zoom on wheel over the ruler, anchored at the cursor; middle-drag pans.
+    // Both clamp to [0, duration]: fully zoomed out IS the animation, which
+    // also re-glues the view to duration edits (see canvas geometry above).
     if (ruler_hovered) {
         float wheel = ImGui::GetIO().MouseWheel;
         if (wheel != 0.0f) {
             float anchor = x_to_t(ImGui::GetIO().MousePos.x);
             float k = std::pow(0.85f, wheel);
-            ui.view_start = anchor + (ui.view_start - anchor) * k;
-            ui.view_end   = anchor + (ui.view_end   - anchor) * k;
+            ui.view_start = std::max(anchor + (ui.view_start - anchor) * k, 0.0f);
+            ui.view_end   = std::min(anchor + (ui.view_end   - anchor) * k, full);
         }
     }
     if (ImGui::IsMouseDragging(ImGuiMouseButton_Middle) && ruler_hovered) {
         float dt = ImGui::GetIO().MouseDelta.x / track_w * span;
         ui.view_start -= dt;
         ui.view_end   -= dt;
+        // Slide the window back inside the animation without changing its width.
+        if (ui.view_start < 0.0f) {
+            ui.view_end -= ui.view_start;
+            ui.view_start = 0.0f;
+        }
+        if (ui.view_end > full) {
+            ui.view_start = std::max(ui.view_start - (ui.view_end - full), 0.0f);
+            ui.view_end   = full;
+        }
     }
 
     {
