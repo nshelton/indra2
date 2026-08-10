@@ -7,7 +7,7 @@
 // just unread by that DE).
 //
 // @param scale float -4.0 4.0 3.0                                            @group Fractal @if fractal=tglad,mandelbox,menger,simple
-// @param offset float3 -5 -5 -5 5 5 5 0.9 0.6 0.3                            @group Fractal @if fractal=tglad,mandelbox,menger,pkleinian,simple
+// @param offset float3 -5 -5 -5 5 5 5 0.9 0.6 0.3                            @group Fractal @if fractal=tglad,menger,pkleinian,simple
 // @param rotation float3 -3.14 -3.14 -3.14 3.14 3.14 3.14 0.0 0.0 0.0        @group Fractal @if fractal=tglad,mandelbox,menger,simple
 // @param marchRatio float 0.1 1.0 0.9                                        @group Marching
 // @param fold_limit float 0.1 2.0 1.0                                        @group Fractal @if fractal=tglad,mandelbox
@@ -30,6 +30,7 @@
 // @param emission_gain float 0 20 0.0                                        @group Material
 // @param emission_width float 0 1 0.15                                       @group Material
 // @param fixed_radius float 0.1 3.0 1.0                                      @group Fractal @if fractal=tglad,mandelbox
+// @param box_offset float3 -5 -5 -5 5 5 5 0.0 0.0 0.0                        @group Fractal @if fractal=mandelbox
 
 // No depth seeding here (unlike pathtrace): this kernel's shading is the
 // step count itself, so seeded marches would brighten the image whenever
