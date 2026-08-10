@@ -1,4 +1,5 @@
 #include "shader_manager.h"
+#include <algorithm>
 #include <filesystem>
 #include <fstream>
 #include <sstream>
@@ -140,16 +141,24 @@ const std::string& ShaderManager::get_error(const std::string& filename) const {
 }
 
 // ---- Param parsing ----
-// Format: // @param <name> <type> <values...> [@if <ctrl>=<v1>,<v2> ...]
+// Format: // @param <name> <type> <values...> [@group <Section>] [@if <ctrl>=<v1>,<v2> ...]
 
-// Parses the trailing `@if` clauses. Each is `<name>=<v1>,<v2>` or
-// `<name>!=<v1>`; the `@if` marker may be its own token or glued to the
-// expression. Malformed clauses are dropped, which leaves the param visible.
-static void parse_conditions(const std::string& text,
-                             std::vector<ShaderParam::Condition>& out) {
+// Parses the trailing annotations, in any order. `@if` clauses are
+// `<name>=<v1>,<v2>` or `<name>!=<v1>`; the marker may be its own token or
+// glued to the expression; multiple clauses are ANDed. `@group <name>` names
+// the panel section the param is drawn under — display-only, so it never
+// disturbs slot order. Malformed clauses are dropped, which leaves the param
+// visible and ungrouped.
+static void parse_annotations(const std::string& text, ShaderParam& p) {
     std::istringstream ss(text);
     std::string tok;
     while (ss >> tok) {
+        if (tok.rfind("@group", 0) == 0) {
+            tok = tok.substr(6);
+            if (tok.empty() && !(ss >> tok)) break;
+            p.group = tok;
+            continue;
+        }
         if (tok.rfind("@if", 0) == 0) {
             tok = tok.substr(3);
             if (tok.empty() && !(ss >> tok)) break;
@@ -174,7 +183,7 @@ static void parse_conditions(const std::string& text,
             start = comma + 1;
         }
 
-        if (!c.name.empty() && !c.values.empty()) out.push_back(std::move(c));
+        if (!c.name.empty() && !c.values.empty()) p.conditions.push_back(std::move(c));
     }
 }
 
@@ -190,13 +199,14 @@ std::vector<ShaderParam> ShaderManager::parse_params(const std::string& source) 
 
         std::string rest = line.substr(pos + 9); // skip "// @param"
 
-        // Split the visibility clause off first — enum eats every remaining
-        // token as a label, so `@if` has to be gone before values are read.
+        // Split the annotations off first — enum eats every remaining token
+        // as a label, so `@group`/`@if` have to be gone before values are
+        // read. npos from both finds means no annotations (min keeps npos).
         ShaderParam p;
-        size_t if_pos = rest.find("@if");
-        if (if_pos != std::string::npos) {
-            parse_conditions(rest.substr(if_pos), p.conditions);
-            rest.resize(if_pos);
+        size_t cut = std::min(rest.find("@if"), rest.find("@group"));
+        if (cut != std::string::npos) {
+            parse_annotations(rest.substr(cut), p);
+            rest.resize(cut);
         }
 
         std::istringstream ls(rest);

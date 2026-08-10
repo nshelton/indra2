@@ -86,13 +86,20 @@ void sphere_fold(thread float3& p, thread float& dr, float min_r2, float fixed_r
 // ---- Scene DE (shared by raymarch + pathtrace) ----
 // Param slots (declared in raymarch.metal): [0] scale, [1] offset,
 // [2] rotation, [3] marchRatio, [4] fold_limit, [5] min_radius,
-// [6] box_dims, [7] levels ([8]+ continue below; [16] lod_factor, [17]+ material)
+// [6] box_dims, [7] levels ([8]+ continue below; [16] lod_factor,
+// [17]+ material, [23] fixed_radius)
+//
+// min_radius and fixed_radius are both the *squared* radii of the sphere
+// fold, matching the classic mandelbox parameterization (0.25 / 1.0).
 float2 tglad(float3 z0, constant FrameUniforms& frame)
 {
     int levels = int(frame.params[7].x);
     float s = frame.params[0].x;
     float fold_limit = frame.params[4].x;
     float min_r2 = frame.params[5].x;
+    // max() so the clamp below stays well-defined when the sliders cross —
+    // Metal's clamp is undefined for minval > maxval.
+    float fixed_r2 = max(frame.params[23].x, min_r2);
     float3 box_dims = frame.params[6].xyz;
 
     float4 scale = float4(-s, -s, -s, s), p0 = frame.params[1].xyzz;
@@ -107,7 +114,7 @@ float2 tglad(float3 z0, constant FrameUniforms& frame)
         float3 start = z.xyz;
 
         z.xyz = clamp(z.xyz, -fold_limit, fold_limit) * 2.0 - z.xyz;
-        z *= scale / clamp(dot(z.xyz, z.xyz), min_r2, 1.0);
+        z *= scale / clamp(dot(z.xyz, z.xyz), min_r2, fixed_r2);
         z.xyz = rot * z.xyz;
         z += p0;
         orbit += length(start - z.xyz);
@@ -149,6 +156,9 @@ float2 mandelbox(float3 pos, constant FrameUniforms& frame) {
     float s = frame.params[0].x;
     float fold_limit = frame.params[4].x;
     float min_r2 = frame.params[5].x;
+    float fixed_r2 = frame.params[23].x;
+    float3 off = frame.params[1].xyz;
+    float3x3 rot = float3x3(frame.rot_mtx[0].xyz, frame.rot_mtx[1].xyz, frame.rot_mtx[2].xyz);
 
     float3 z = pos;
     float dr = 1.0;
@@ -156,8 +166,12 @@ float2 mandelbox(float3 pos, constant FrameUniforms& frame) {
 
     for (int i = 0; i < levels; i++) {
         z = box_fold(z, fold_limit);
-        sphere_fold(z, dr, min_r2, 1.0);
-        z = s * z + pos;
+        sphere_fold(z, dr, min_r2, fixed_r2);
+        z = rot * z;                  // twist (identity when rotation = 0)
+        // off shifts the julia constant: c = pos + off, zero is the classic
+        // box. Rotation is an isometry and off is constant per iteration, so
+        // dr's running derivative needs no change for either.
+        z = s * z + pos + off;
         dr = dr * abs(s) + 1.0;
         orbit = min(orbit, length(z));
     }

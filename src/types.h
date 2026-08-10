@@ -36,6 +36,10 @@ struct ShaderParam {
     bool logarithmic     = false;  // ImGuiSliderFlags_Logarithmic
     std::vector<std::string> labels;  // Enum only — combo entries; current_val[0] is the index
     std::vector<Condition> conditions;  // empty = always shown
+    // Panel section from a trailing `@group <name>`. Display-only: the GUI
+    // draws sections in first-appearance order, so related params can sit
+    // together while declaration (slot) order stays append-only.
+    std::string group;                  // "" = ungrouped
 };
 
 // An enum's range is derived from its label list, and ColorEdit ignores range

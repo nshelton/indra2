@@ -487,147 +487,175 @@ static void render_param_popup(ShaderParam& p, Timeline* tl, const char* shader_
     }
 }
 
+// One param's row: the widget, the animated tint, the timeline latch and
+// auto-key hooks, and the right-click popup. Visibility is the caller's call.
+static void render_param_row(ShaderParam& p, Timeline* tl, const char* shader_file,
+                             bool animatable) {
+    // Scope every widget to the param so the context menu below gets a
+    // unique ID. Without this the multi-component sliders all collide:
+    // SliderScalarN wraps its widgets in a group, and EndGroup() calls
+    // ItemAdd(bb, 0), so LastItemData.ID is 0 for every one of them —
+    // BeginPopupContextItem() with no str_id would key all their menus to
+    // popup id 0 and render them stacked into one window.
+    ImGui::PushID(p.name.c_str());
+
+    bool animated = animatable && tl->has_track(shader_file, p.name);
+    if (animated) ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.95f, 0.85f, 0.35f, 1.0f));
+
+    const bool compact = g_compact_param_labels;
+
+    // An overridden range is otherwise invisible until you right-click,
+    // and it silently outranks the shader's declaration.
+    char name_buf[96];
+    std::snprintf(name_buf, sizeof(name_buf), "%s%s", p.name.c_str(),
+                  has_range_override(p) ? " *" : "");
+
+    // "###p" fixes the widget ID regardless of the visible text, so the
+    // override marker can appear mid-drag without ImGui losing the item.
+    // In compact mode the display part is empty and the name is painted
+    // over the bar instead.
+    char label[128];
+    if (compact) std::snprintf(label, sizeof(label), "###p");
+    else         std::snprintf(label, sizeof(label), "%s###p", name_buf);
+
+    // Reclaim the space the label used to occupy. Colors are excluded:
+    // NoInputs sizes the swatch to a fixed square, so their name goes
+    // beside it (below) rather than on top of it.
+    if (compact && !p.is_color) ImGui::SetNextItemWidth(-FLT_MIN);
+
+    switch (p.type) {
+        case ShaderParam::Float:
+            ImGui::SliderFloat(label, &p.current_val[0],
+                               p.min_val[0], p.max_val[0], slider_fmt(p), slider_flags(p));
+            break;
+        case ShaderParam::Int: {
+            int v = (int)p.current_val[0];
+            if (ImGui::SliderInt(label, &v,
+                                 (int)p.min_val[0], (int)p.max_val[0], "%d", slider_flags(p))) {
+                p.current_val[0] = (float)v;
+            }
+            break;
+        }
+        case ShaderParam::Enum: {
+            int v = std::clamp((int)p.current_val[0], 0, (int)p.labels.size() - 1);
+            // A combo's preview text is already left-aligned inside the
+            // frame, so the name goes in the preview rather than being
+            // painted on top of it — an overlay would collide.
+            char preview[160];
+            if (compact) {
+                std::snprintf(preview, sizeof(preview), "%s:  %s",
+                              p.name.c_str(), p.labels[v].c_str());
+            } else {
+                std::snprintf(preview, sizeof(preview), "%s", p.labels[v].c_str());
+            }
+            if (ImGui::BeginCombo(label, preview)) {
+                for (int i = 0; i < (int)p.labels.size(); i++) {
+                    if (ImGui::Selectable(p.labels[i].c_str(), i == v)) {
+                        p.current_val[0] = (float)i;
+                    }
+                }
+                ImGui::EndCombo();
+            }
+            break;
+        }
+        case ShaderParam::Float2:
+            ImGui::SliderFloat2(label, p.current_val,
+                                p.min_val[0], p.max_val[0], slider_fmt(p), slider_flags(p));
+            break;
+        case ShaderParam::Float3:
+            if (p.is_color) {
+                ImGui::ColorEdit3(label, p.current_val, color_flags(compact));
+            } else {
+                ImGui::SliderFloat3(label, p.current_val,
+                                    p.min_val[0], p.max_val[0], slider_fmt(p), slider_flags(p));
+            }
+            break;
+        case ShaderParam::Float4:
+            if (p.is_color) {
+                ImGui::ColorEdit4(label, p.current_val, color_flags(compact));
+            } else {
+                ImGui::SliderFloat4(label, p.current_val,
+                                    p.min_val[0], p.max_val[0], slider_fmt(p), slider_flags(p));
+            }
+            break;
+    }
+
+    // Draw-list only, so it doesn't disturb LastItemData below. Enums
+    // carry their name in the preview text and colors get theirs beside
+    // the swatch, so neither wants an overlay.
+    if (compact && !p.is_color && p.type != ShaderParam::Enum) {
+        overlay_label(name_buf, animated ? IM_COL32(242, 217, 89, 255)
+                                         : ImGui::GetColorU32(ImGuiCol_Text));
+    }
+
+    if (animated) ImGui::PopStyleColor();
+
+    // These three all read g.LastItemData from the widget above, so
+    // nothing may submit an item between it and them.
+    if (animatable) {
+        // Held slider: tell the timeline to stop driving this channel, or
+        // the curve overwrites the drag at the top of the next frame.
+        if (ImGui::IsItemActive()) {
+            tl->editing_shader = shader_file;
+            tl->editing_param = p.name;
+        }
+        if (tl->auto_key && ImGui::IsItemDeactivatedAfterEdit()) {
+            tl->key_param(tl->playhead, shader_file, p);
+        }
+    }
+
+    // Explicit str_id — see the PushID comment above.
+    if (ImGui::BeginPopupContextItem("##ctx")) {
+        render_param_popup(p, tl, shader_file, animatable, animated);
+        ImGui::EndPopup();
+    } else if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+        ImGui::SetTooltip(animatable ? "Right-click: value, range, animate"
+                                     : "Right-click: value, range");
+    }
+
+    // A color's name sits next to its swatch. This submits an item, so it
+    // has to come after everything above that reads LastItemData.
+    if (compact && p.is_color) {
+        ImGui::SameLine(0, ImGui::GetStyle().ItemInnerSpacing.x);
+        if (animated) ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.95f, 0.85f, 0.35f, 1.0f));
+        ImGui::TextUnformatted(name_buf);
+        if (animated) ImGui::PopStyleColor();
+    }
+
+    ImGui::PopID();
+}
+
 void render_shader_params(std::vector<ShaderParam>& params, const ParamContext& ctx,
                           Timeline* tl, const char* shader_file) {
     const bool animatable = tl && shader_file;
 
-    for (auto& p : params) {
-        // Hidden params keep their value and still reach the GPU — the shader
-        // just ignores them for the current fractal, so nothing resets.
-        if (!param_visible(p, params, ctx)) continue;
+    // Draw in `@group` sections: groups in first-appearance order, params in
+    // declaration order within each. A display-only reordering — slot order,
+    // which the shaders read by index, is untouched, so related params can
+    // sit together despite the append-only slot rule.
+    std::vector<std::string> groups;
+    for (const auto& p : params) {
+        if (std::find(groups.begin(), groups.end(), p.group) == groups.end()) {
+            groups.push_back(p.group);
+        }
+    }
 
-        // Scope every widget to the param so the context menu below gets a
-        // unique ID. Without this the multi-component sliders all collide:
-        // SliderScalarN wraps its widgets in a group, and EndGroup() calls
-        // ItemAdd(bb, 0), so LastItemData.ID is 0 for every one of them —
-        // BeginPopupContextItem() with no str_id would key all their menus to
-        // popup id 0 and render them stacked into one window.
-        ImGui::PushID(p.name.c_str());
-
-        bool animated = animatable && tl->has_track(shader_file, p.name);
-        if (animated) ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.95f, 0.85f, 0.35f, 1.0f));
-
-        const bool compact = g_compact_param_labels;
-
-        // An overridden range is otherwise invisible until you right-click,
-        // and it silently outranks the shader's declaration.
-        char name_buf[96];
-        std::snprintf(name_buf, sizeof(name_buf), "%s%s", p.name.c_str(),
-                      has_range_override(p) ? " *" : "");
-
-        // "###p" fixes the widget ID regardless of the visible text, so the
-        // override marker can appear mid-drag without ImGui losing the item.
-        // In compact mode the display part is empty and the name is painted
-        // over the bar instead.
-        char label[128];
-        if (compact) std::snprintf(label, sizeof(label), "###p");
-        else         std::snprintf(label, sizeof(label), "%s###p", name_buf);
-
-        // Reclaim the space the label used to occupy. Colors are excluded:
-        // NoInputs sizes the swatch to a fixed square, so their name goes
-        // beside it (below) rather than on top of it.
-        if (compact && !p.is_color) ImGui::SetNextItemWidth(-FLT_MIN);
-
-        switch (p.type) {
-            case ShaderParam::Float:
-                ImGui::SliderFloat(label, &p.current_val[0],
-                                   p.min_val[0], p.max_val[0], slider_fmt(p), slider_flags(p));
-                break;
-            case ShaderParam::Int: {
-                int v = (int)p.current_val[0];
-                if (ImGui::SliderInt(label, &v,
-                                     (int)p.min_val[0], (int)p.max_val[0], "%d", slider_flags(p))) {
-                    p.current_val[0] = (float)v;
-                }
-                break;
+    for (const auto& g : groups) {
+        bool header_drawn = false;
+        for (auto& p : params) {
+            if (p.group != g) continue;
+            // Hidden params keep their value and still reach the GPU — the
+            // shader just ignores them for the current fractal, so nothing
+            // resets.
+            if (!param_visible(p, params, ctx)) continue;
+            // Deferred to the first visible param so a section that is
+            // entirely hidden vanishes whole, header included.
+            if (!header_drawn && !g.empty()) {
+                ImGui::SeparatorText(g.c_str());
+                header_drawn = true;
             }
-            case ShaderParam::Enum: {
-                int v = std::clamp((int)p.current_val[0], 0, (int)p.labels.size() - 1);
-                // A combo's preview text is already left-aligned inside the
-                // frame, so the name goes in the preview rather than being
-                // painted on top of it — an overlay would collide.
-                char preview[160];
-                if (compact) {
-                    std::snprintf(preview, sizeof(preview), "%s:  %s",
-                                  p.name.c_str(), p.labels[v].c_str());
-                } else {
-                    std::snprintf(preview, sizeof(preview), "%s", p.labels[v].c_str());
-                }
-                if (ImGui::BeginCombo(label, preview)) {
-                    for (int i = 0; i < (int)p.labels.size(); i++) {
-                        if (ImGui::Selectable(p.labels[i].c_str(), i == v)) {
-                            p.current_val[0] = (float)i;
-                        }
-                    }
-                    ImGui::EndCombo();
-                }
-                break;
-            }
-            case ShaderParam::Float2:
-                ImGui::SliderFloat2(label, p.current_val,
-                                    p.min_val[0], p.max_val[0], slider_fmt(p), slider_flags(p));
-                break;
-            case ShaderParam::Float3:
-                if (p.is_color) {
-                    ImGui::ColorEdit3(label, p.current_val, color_flags(compact));
-                } else {
-                    ImGui::SliderFloat3(label, p.current_val,
-                                        p.min_val[0], p.max_val[0], slider_fmt(p), slider_flags(p));
-                }
-                break;
-            case ShaderParam::Float4:
-                if (p.is_color) {
-                    ImGui::ColorEdit4(label, p.current_val, color_flags(compact));
-                } else {
-                    ImGui::SliderFloat4(label, p.current_val,
-                                        p.min_val[0], p.max_val[0], slider_fmt(p), slider_flags(p));
-                }
-                break;
+            render_param_row(p, tl, shader_file, animatable);
         }
-
-        // Draw-list only, so it doesn't disturb LastItemData below. Enums
-        // carry their name in the preview text and colors get theirs beside
-        // the swatch, so neither wants an overlay.
-        if (compact && !p.is_color && p.type != ShaderParam::Enum) {
-            overlay_label(name_buf, animated ? IM_COL32(242, 217, 89, 255)
-                                             : ImGui::GetColorU32(ImGuiCol_Text));
-        }
-
-        if (animated) ImGui::PopStyleColor();
-
-        // These three all read g.LastItemData from the widget above, so
-        // nothing may submit an item between it and them.
-        if (animatable) {
-            // Held slider: tell the timeline to stop driving this channel, or
-            // the curve overwrites the drag at the top of the next frame.
-            if (ImGui::IsItemActive()) {
-                tl->editing_shader = shader_file;
-                tl->editing_param = p.name;
-            }
-            if (tl->auto_key && ImGui::IsItemDeactivatedAfterEdit()) {
-                tl->key_param(tl->playhead, shader_file, p);
-            }
-        }
-
-        // Explicit str_id — see the PushID comment above.
-        if (ImGui::BeginPopupContextItem("##ctx")) {
-            render_param_popup(p, tl, shader_file, animatable, animated);
-            ImGui::EndPopup();
-        } else if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
-            ImGui::SetTooltip(animatable ? "Right-click: value, range, animate"
-                                         : "Right-click: value, range");
-        }
-
-        // A color's name sits next to its swatch. This submits an item, so it
-        // has to come after everything above that reads LastItemData.
-        if (compact && p.is_color) {
-            ImGui::SameLine(0, ImGui::GetStyle().ItemInnerSpacing.x);
-            if (animated) ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.95f, 0.85f, 0.35f, 1.0f));
-            ImGui::TextUnformatted(name_buf);
-            if (animated) ImGui::PopStyleColor();
-        }
-
-        ImGui::PopID();
     }
 }
 
