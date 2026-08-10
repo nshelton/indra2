@@ -405,7 +405,9 @@ int main(int argc, char* argv[]) {
 
             camera.update(dt, events.data(), (int)events.size(), (float)w, (float)h);
 
-            if (timeline.auto_key && timeline.drive_camera &&
+            // enabled check: a parked (disabled) timeline must not silently
+            // collect keys from camera moves just because auto-key was left on.
+            if (timeline.enabled && timeline.auto_key && timeline.drive_camera &&
                 (std::memcmp(pre_pos, camera.pos, sizeof(pre_pos)) != 0 ||
                  std::memcmp(pre_target, camera.target, sizeof(pre_target)) != 0 ||
                  pre_fov != camera.fov)) {
@@ -828,19 +830,50 @@ int main(int argc, char* argv[]) {
             if (ImGui::Combo("Mode", &mode_idx, mode_names, IM_ARRAYSIZE(mode_names))) {
                 camera.mode = (CameraMode)mode_idx;
             }
+            // Typed pose entry — exact, repeatable camera keys: dial in
+            // numbers, then Key Camera (or let auto-key catch the edit).
+            // Disabled while the timeline owns the camera, same as the mouse.
+            // Values apply live per keystroke; auto-key fires once, when a
+            // field loses focus after an edit.
+            ImGui::BeginDisabled(cam_locked);
+            bool cam_typed = false;
             if (ImGui::Button("Reset Camera")) {
                 camera.pos[0] = 0; camera.pos[1] = 0; camera.pos[2] = 1;
                 camera.target[0] = 0; camera.target[1] = 0; camera.target[2] = 0;
             }
-            ImGui::Text("Pos:    %.2f, %.2f, %.2f", camera.pos[0], camera.pos[1], camera.pos[2]);
-            ImGui::Text("Target: %.2f, %.2f, %.2f", camera.target[0], camera.target[1], camera.target[2]);
+            ImGui::InputFloat3("Target", camera.target, "%.7g");
+            cam_typed |= ImGui::IsItemDeactivatedAfterEdit();
+            ImGui::InputFloat3("Position", camera.pos, "%.7g");
+            cam_typed |= ImGui::IsItemDeactivatedAfterEdit();
+            {
+                float off[3];
+                v3::sub(camera.pos, camera.target, off);
+                float cur = v3::length(off);
+                float dist = cur;
+                // Moves pos along the current view direction. Live-typed
+                // intermediates like the "0" in "0.001" are skipped so a
+                // transient zero can't collapse pos onto target and lose the
+                // direction — and deliberately not clamped to the trackball's
+                // zoom limits, typing exact tiny distances is the point.
+                if (ImGui::InputFloat("Distance", &dist, 0, 0, "%.7g") &&
+                    dist > 0.0f && cur > 0.0f) {
+                    v3::mad(camera.target, off, dist / cur, camera.pos);
+                }
+                cam_typed |= ImGui::IsItemDeactivatedAfterEdit();
+            }
+            ImGui::SliderAngle("FOV", &camera.fov, 5.0f, 160.0f);
+            cam_typed |= ImGui::IsItemDeactivatedAfterEdit();
+            ImGui::EndDisabled();
+            if (cam_locked) ImGui::TextDisabled("(timeline is driving the camera)");
+
+            // Typed edits sequence exactly like mouse moves do.
+            if (cam_typed && timeline.enabled && timeline.auto_key && timeline.drive_camera) {
+                timeline.key_camera(timeline.playhead, camera);
+            }
+
             ImGui::Text("Fwd:    %.3f, %.3f, %.3f", fwd[0], fwd[1], fwd[2]);
             ImGui::Text("Up:     %.3f, %.3f, %.3f", up[0], up[1], up[2]);
             ImGui::Text("Right:  %.3f, %.3f, %.3f", right[0], right[1], right[2]);
-            {
-                float off[3]; v3::sub(camera.pos, camera.target, off);
-                ImGui::Text("Distance: %.2f", v3::length(off));
-            }
             ImGui::Text("Surface Dist: %.4f", camera.nav_distance);
             ImGui::Checkbox("Adaptive Speed", &camera.adaptive_speed);
             ImGui::SliderFloat("Rotate Speed", &camera.rotate_speed, 0.01f, 5.0f);
