@@ -257,6 +257,15 @@ int main(int argc, char* argv[]) {
     // Render resolution while a job is active (render scale), else the drawable.
     uint32_t job_w = 0, job_h = 0;
 
+    // Resolution override — applies to the live view as well as renders: the
+    // engine runs at exactly this size, centered in the window (the blit
+    // clears the border). res_wh is the GUI edit buffer; ovr_* only update
+    // when an edit completes, so per-keystroke intermediates ("19" on the
+    // way to "1920") don't thrash texture reallocations.
+    bool override_res = false;
+    int  res_wh[2] = {1920, 1080};
+    uint32_t ovr_w = 1920, ovr_h = 1080;
+
     // Target of an open preset confirmation dialog; spans frames.
     PendingPreset pending;
 
@@ -353,6 +362,28 @@ int main(int argc, char* argv[]) {
         int win_w, win_h;
         SDL_GetWindowSize(window, &win_w, &win_h);
 
+        // Window-point coords <-> render-texture pixels. The image is
+        // blitted 1:1 and centered in the drawable (see blit_to_screen), so
+        // this is the display-density scale plus a centering offset —
+        // identical to the plain proportional mapping whenever the render
+        // resolution matches the drawable.
+        auto win_to_tex_x = [&](float x) {
+            float dw = (float)backend.drawable_width();
+            return x * dw / (float)win_w - (dw - (float)w) * 0.5f;
+        };
+        auto win_to_tex_y = [&](float y) {
+            float dh = (float)backend.drawable_height();
+            return y * dh / (float)win_h - (dh - (float)h) * 0.5f;
+        };
+        auto tex_to_win_x = [&](float x) {
+            float dw = (float)backend.drawable_width();
+            return (x + (dw - (float)w) * 0.5f) * (float)win_w / dw;
+        };
+        auto tex_to_win_y = [&](float y) {
+            float dh = (float)backend.drawable_height();
+            return (y + (dh - (float)h) * 0.5f) * (float)win_h / dh;
+        };
+
         // --- Timing ---
         float time = (float)(SDL_GetPerformanceCounter() - start_time) / (float)freq;
         float dt = time - prev_time;
@@ -410,8 +441,8 @@ int main(int argc, char* argv[]) {
                 if (d[i] > 0 && d[i] < t) t = d[i];
             }
             if (t < 99.0f) {  // skip sky (miss writes max_dist = 100)
-                float px = pick_x * (float)w / (float)win_w;
-                float py = pick_y * (float)h / (float)win_h;
+                float px = win_to_tex_x(pick_x);
+                float py = win_to_tex_y(pick_y);
                 float ndc_x = (px / (float)w) * 2.0f - 1.0f;
                 float ndc_y = -((py / (float)h) * 2.0f - 1.0f);
                 float half_fov = std::tan(camera.fov * 0.5f);
@@ -445,10 +476,11 @@ int main(int argc, char* argv[]) {
         }
 
         // --- Handle resize ---
-        // A render job pins the resolution (render scale); clearing job.active
-        // lets the next frame snap back to the drawable.
-        uint32_t new_w = job.active ? job_w : backend.drawable_width();
-        uint32_t new_h = job.active ? job_h : backend.drawable_height();
+        // A render job pins the resolution; interactively the override does
+        // the same, and clearing either lets the next frame snap back to the
+        // drawable.
+        uint32_t new_w = job.active ? job_w : override_res ? ovr_w : backend.drawable_width();
+        uint32_t new_h = job.active ? job_h : override_res ? ovr_h : backend.drawable_height();
         bool resized = (new_w != w || new_h != h);
         if (resized) {
             w = new_w; h = new_h;
@@ -476,11 +508,11 @@ int main(int argc, char* argv[]) {
         uniforms.inv_resolution[0] = 1.0f / (float)w;
         uniforms.inv_resolution[1] = 1.0f / (float)h;
 
-        // Mouse
+        // Mouse, normalized over the rendered image
         float mx, my;
         SDL_GetMouseState(&mx, &my);
-        uniforms.mouse[0] = mx / (float)w;
-        uniforms.mouse[1] = my / (float)h;
+        uniforms.mouse[0] = win_to_tex_x(mx) / (float)w;
+        uniforms.mouse[1] = win_to_tex_y(my) / (float)h;
 
         // Camera vectors
         std::memcpy(uniforms.camera_pos, camera.pos, sizeof(float) * 3);
@@ -699,9 +731,9 @@ int main(int argc, char* argv[]) {
             DEPTH_PATCH, DEPTH_PATCH, sizeof(float));
 
         // Copy depth patch under the cursor for pick readback next frame
-        uint32_t pick_tx = (uint32_t)std::clamp((int)(mx * (float)w / (float)win_w * 0.5f) - (int)(PICK_PATCH / 2),
+        uint32_t pick_tx = (uint32_t)std::clamp((int)(win_to_tex_x(mx) * 0.5f) - (int)(PICK_PATCH / 2),
                                                 0, (int)(half_w - PICK_PATCH));
-        uint32_t pick_ty = (uint32_t)std::clamp((int)(my * (float)h / (float)win_h * 0.5f) - (int)(PICK_PATCH / 2),
+        uint32_t pick_ty = (uint32_t)std::clamp((int)(win_to_tex_y(my) * 0.5f) - (int)(PICK_PATCH / 2),
                                                 0, (int)(half_h - PICK_PATCH));
         backend.copy_texture_to_buffer(tex_current_depth, buf_pick_read,
             pick_tx, pick_ty, PICK_PATCH, PICK_PATCH, sizeof(float));
@@ -785,9 +817,11 @@ int main(int argc, char* argv[]) {
                           vp[8 + r] * camera.target[2] + vp[12 + r];
             }
             if (clip[3] > 0) {
-                ImVec2 disp = ImGui::GetIO().DisplaySize;
-                ImVec2 c((clip[0] / clip[3] * 0.5f + 0.5f) * disp.x,
-                         (0.5f - clip[1] / clip[3] * 0.5f) * disp.y);
+                // NDC -> render-texture pixels -> window points, so the
+                // marker stays on the pivot when the render is centered at
+                // an override resolution rather than filling the window.
+                ImVec2 c(tex_to_win_x((clip[0] / clip[3] * 0.5f + 0.5f) * (float)w),
+                         tex_to_win_y((0.5f - clip[1] / clip[3] * 0.5f) * (float)h));
                 ImDrawList* dl = ImGui::GetBackgroundDrawList();
                 dl->AddCircle(c, 9.0f, IM_COL32(0, 0, 0, 200), 0, 3.5f);
                 dl->AddCircle(c, 9.0f, IM_COL32(255, 170, 40, 255), 0, 1.5f);
@@ -1195,18 +1229,21 @@ int main(int argc, char* argv[]) {
                 ImGui::SetTooltip("Fraction of a frame the shutter is open.\n"
                                   "0 = static poses (no motion blur).");
             }
-            static bool override_res = false;
-            static int res_wh[2] = {1920, 1080};
-            ImGui::Checkbox("Override resolution", &override_res);
+            auto apply_ovr = [&]() {
+                ovr_w = (uint32_t)std::clamp(res_wh[0], 2, 16384) & ~1u;
+                ovr_h = (uint32_t)std::clamp(res_wh[1], 2, 16384) & ~1u;
+            };
+            if (ImGui::Checkbox("Override resolution", &override_res)) apply_ovr();
             if (ImGui::IsItemHovered()) {
-                ImGui::SetTooltip("Render at an exact size instead of window x scale.\n"
-                                  "Shown centered in the window; larger than the window\n"
+                ImGui::SetTooltip("Live view and renders run at exactly this size,\n"
+                                  "centered in the window; larger than the window\n"
                                   "shows a center crop. PNGs are always full size.");
             }
             if (override_res) {
                 ImGui::SameLine();
                 ImGui::SetNextItemWidth(140);
                 ImGui::InputInt2("##res_wh", res_wh);
+                if (ImGui::IsItemDeactivatedAfterEdit()) apply_ovr();
             }
             ImGui::BeginDisabled(override_res);
             ImGui::SliderFloat("Render scale", &job.scale, 0.25f, 4.0f, "%.2fx");
@@ -1243,8 +1280,8 @@ int main(int argc, char* argv[]) {
                         // Even dimensions: the trace pass runs at exactly half
                         // resolution and an odd size would drop a column.
                         if (override_res) {
-                            job_w = (uint32_t)std::clamp(res_wh[0], 2, 16384) & ~1u;
-                            job_h = (uint32_t)std::clamp(res_wh[1], 2, 16384) & ~1u;
+                            job_w = ovr_w;
+                            job_h = ovr_h;
                         } else {
                             job_w = (uint32_t)std::max(2.0f, backend.drawable_width() * job.scale) & ~1u;
                             job_h = (uint32_t)std::max(2.0f, backend.drawable_height() * job.scale) & ~1u;
