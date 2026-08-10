@@ -389,14 +389,21 @@ void MetalBackend::render_imgui() {
 
     impl->imgui_render_pass.colorAttachments[0].texture = impl->current_drawable.texture;
 
-    // Render passes sample vertex-start .. fragment-end. The descriptor is
-    // reused across frames, so the attachment is rewritten every time —
-    // sample buffer and indices both go stale after a frame.
+    // Fragment stage only. On a TBDR GPU the vertex stage runs as soon as
+    // it's scheduled — potentially frames before the fragment stage, which
+    // is what waits for the compositor to release the drawable — so a
+    // vertex-start..fragment-end span measures the whole drawable wait
+    // (pipeline depth x refresh interval), not this pass's work. Fragment
+    // start fires after that wait. The descriptor is reused across frames:
+    // rewrite every field, including parking the vertex index back on
+    // DontSample so an older configuration can't linger.
     if (impl->ts_supported && impl->ts_cursor + 2 <= Impl::TS_MAX_SAMPLES) {
         MTLRenderPassSampleBufferAttachmentDescriptor* att =
             impl->imgui_render_pass.sampleBufferAttachments[0];
         att.sampleBuffer = impl->ts_buffers[impl->ts_slot];
-        att.startOfVertexSampleIndex = impl->ts_cursor;
+        att.startOfVertexSampleIndex = MTLCounterDontSample;
+        att.endOfVertexSampleIndex = MTLCounterDontSample;
+        att.startOfFragmentSampleIndex = impl->ts_cursor;
         att.endOfFragmentSampleIndex = impl->ts_cursor + 1;
         impl->ts_cursor += 2;
         impl->ts_labels.push_back("imgui");

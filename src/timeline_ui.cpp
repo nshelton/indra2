@@ -659,9 +659,27 @@ void draw_timeline(Timeline& tl, TimelineUI& ui, ShaderManager& shaders, Camera&
                           [](const Key& a, const Key& b) { return a.t < b.t; });
             }
             if (ImGui::BeginPopupContextItem("##ckm2")) {
-                ImGui::TextDisabled("%.3fs = %.4f", key.t, key.v);
+                static const char* comp_names[4] = {"x", "y", "z", "w"};
+                ImGui::TextDisabled("%s @ %.3fs = %.4f",
+                                    comp_names[std::clamp(tr.component, 0, 3)], key.t, key.v);
                 ImGui::Separator();
-                if (interp_menu(key.interp)) curve_mutated = true;
+                Interp mode = key.interp;
+                if (interp_menu(mode)) {
+                    // A multi-component param draws one diamond per channel,
+                    // and channels sharing a value stack them pixel-coincident
+                    // — which one a right-click lands on is submission order,
+                    // not intent. So a type change applies to every channel's
+                    // key at this time, the same scope as the dope sheet group
+                    // row; per-channel types remain reachable through the
+                    // expanded component rows.
+                    for (auto& otr : tl.tracks) {
+                        if (otr.shader != tr.shader || otr.param != tr.param) continue;
+                        for (auto& okey : otr.keys) {
+                            if (std::fabs(okey.t - key.t) < ft * 0.25f) okey.interp = mode;
+                        }
+                    }
+                    curve_mutated = true;
+                }
                 if (ImGui::MenuItem("Delete")) {
                     tr.erase_at((int)k);
                     ui.sel_key = -1;
