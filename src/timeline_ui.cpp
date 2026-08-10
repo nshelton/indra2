@@ -99,6 +99,77 @@ void delete_selected(Timeline& tl) {
     std::erase_if(tl.cam_keys, [](const CameraKey& k) { return k.selected; });
 }
 
+void copy_selection(const Timeline& tl, TimelineUI& ui) {
+    float t0 = 1e9f;
+    for (const auto& tr : tl.tracks)
+        for (const auto& k : tr.keys)
+            if (k.selected) t0 = std::min(t0, k.t);
+    for (const auto& k : tl.cam_keys)
+        if (k.selected) t0 = std::min(t0, k.t);
+    if (t0 >= 1e9f) return;  // nothing selected; keep the old clipboard
+
+    ui.clip_keys.clear();
+    ui.clip_cam.clear();
+    for (const auto& tr : tl.tracks) {
+        for (const auto& k : tr.keys) {
+            if (!k.selected) continue;
+            TimelineUI::ClipKey ck{tr.shader, tr.param, tr.component, k};
+            ck.key.t -= t0;
+            ck.key.selected = false;
+            ui.clip_keys.push_back(std::move(ck));
+        }
+    }
+    for (const auto& k : tl.cam_keys) {
+        if (!k.selected) continue;
+        CameraKey ck = k;
+        ck.t -= t0;
+        ck.selected = false;
+        ui.clip_cam.push_back(ck);
+    }
+}
+
+// Pastes at the playhead, earliest key first, relative offsets intact. The
+// pasted keys become the selection so a follow-up drag can place them.
+// Anything already inside a pasted key's merge window is replaced, mirroring
+// Track::insert. Returns false when the clipboard is empty.
+bool paste_clipboard(Timeline& tl, TimelineUI& ui) {
+    if (ui.clip_keys.empty() && ui.clip_cam.empty()) return false;
+    clear_selection(tl);
+    float window = tl.frame_time() * 0.5f;
+
+    for (const auto& ck : ui.clip_keys) {
+        Track* tr = tl.find(ck.shader, ck.param, ck.component);
+        if (!tr) {
+            // Track was deleted since the copy — recreate it, muted-off
+            // defaults and all, so the paste never silently drops keys.
+            Track nt;
+            nt.shader = ck.shader;
+            nt.param = ck.param;
+            nt.component = ck.component;
+            tl.tracks.push_back(std::move(nt));
+            tr = &tl.tracks.back();
+        }
+        Key k = ck.key;
+        k.t = std::clamp(tl.playhead + k.t, 0.0f, tl.duration);
+        k.selected = true;
+        std::erase_if(tr->keys, [&](const Key& e) { return std::fabs(e.t - k.t) <= window; });
+        auto it = std::upper_bound(tr->keys.begin(), tr->keys.end(), k.t,
+                                   [](float x, const Key& e) { return x < e.t; });
+        tr->keys.insert(it, k);
+    }
+    for (const auto& sk : ui.clip_cam) {
+        CameraKey k = sk;
+        k.t = std::clamp(tl.playhead + k.t, 0.0f, tl.duration);
+        k.selected = true;
+        std::erase_if(tl.cam_keys,
+                      [&](const CameraKey& e) { return std::fabs(e.t - k.t) <= window; });
+        auto it = std::upper_bound(tl.cam_keys.begin(), tl.cam_keys.end(), k.t,
+                                   [](float x, const CameraKey& e) { return x < e.t; });
+        tl.cam_keys.insert(it, k);
+    }
+    return true;
+}
+
 // Dragging doesn't keep keys sorted (flags make that safe, and eval degrades
 // gracefully on a transiently unsorted track); restore the invariant when
 // the drag ends.
@@ -362,18 +433,33 @@ void draw_timeline(Timeline& tl, TimelineUI& ui, ShaderManager& shaders, Camera&
     ImGui::SameLine();
     ImGui::Checkbox("Curves", &ui.show_curves);
 
-    // Delete/Backspace removes every selected key. Before collect_rows so
-    // the row list never sees the deleted keys; gated on text input so
-    // typing a preset name can't nuke a selection.
+    // Keyboard edits on the selection: Delete/Backspace removes it,
+    // Cmd/Ctrl+C/X/V copy, cut and paste (paste lands at the playhead).
+    // Before collect_rows so the row list never sees deleted keys; gated on
+    // text input so typing a preset name can't fire them.
     if (!ImGui::GetIO().WantTextInput &&
-        ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows) &&
-        (ImGui::IsKeyPressed(ImGuiKey_Delete, false) ||
-         ImGui::IsKeyPressed(ImGuiKey_Backspace, false)) &&
-        any_selected(tl)) {
-        delete_selected(tl);
-        ui.sel_track = -1;
-        ui.sel_key = -1;
-        tl.revision++;
+        ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows)) {
+        bool have_sel = any_selected(tl);
+        if (have_sel && (ImGui::IsKeyPressed(ImGuiKey_Delete, false) ||
+                         ImGui::IsKeyPressed(ImGuiKey_Backspace, false))) {
+            delete_selected(tl);
+            ui.sel_track = -1;
+            ui.sel_key = -1;
+            tl.revision++;
+        }
+        if (have_sel && ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiKey_C)) {
+            copy_selection(tl, ui);
+        }
+        if (have_sel && ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiKey_X)) {
+            copy_selection(tl, ui);
+            delete_selected(tl);
+            ui.sel_track = -1;
+            ui.sel_key = -1;
+            tl.revision++;
+        }
+        if (ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiKey_V)) {
+            if (paste_clipboard(tl, ui)) tl.revision++;
+        }
     }
 
     // ---- Rows ----

@@ -153,6 +153,18 @@ struct TimelineUI {
     // (tgt.xyz, dir.xyz, log_dist, fov).
     unsigned cam_mask = 0xFFu;
 
+    // Copy/paste clipboard: the selected keys, times stored relative to the
+    // earliest one. Param keys carry their track identity and re-target by
+    // (shader, param, component) on paste; paste lands the earliest key on
+    // the playhead. App-local, not the OS clipboard.
+    struct ClipKey {
+        std::string shader, param;
+        int component = 0;
+        Key key;
+    };
+    std::vector<ClipKey>   clip_keys;
+    std::vector<CameraKey> clip_cam;
+
     // Groups expanded to their per-component rows, keyed "shader|param".
     std::vector<std::string> expanded;
 
