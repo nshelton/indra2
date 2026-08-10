@@ -193,6 +193,7 @@ float2 menger(float3 pos, constant FrameUniforms& frame) {
     int levels = int(frame.params[7].x);
     float s = frame.params[0].x;
     float3 off = frame.params[1].xyz;
+    float3 box_dims = frame.params[6].xyz;
     float3x3 rot = float3x3(frame.rot_mtx[0].xyz, frame.rot_mtx[1].xyz, frame.rot_mtx[2].xyz);
 
     float3 z = pos;
@@ -211,7 +212,8 @@ float2 menger(float3 pos, constant FrameUniforms& frame) {
         if (ORBIT) orbit = min(orbit, length(z));
     }
 
-    return float2(sd_box(z, float3(1.0)) / dr, orbit);
+    // Base primitive from box_dims — (1,1,1) is the classic sponge.
+    return float2(sd_box(z, box_dims) / dr, orbit);
 }
 
 template <bool ORBIT>

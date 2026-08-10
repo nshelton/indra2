@@ -12,7 +12,7 @@
 // @param marchRatio float 0.1 1.0 0.9                                        @group Marching
 // @param fold_limit float 0.1 2.0 1.0                                        @group Fractal @if fractal=tglad,mandelbox
 // @param min_radius float 0.05 1.0 0.25                                      @group Fractal @if fractal=tglad,mandelbox
-// @param box_dims float3 0 0 0 50 50 50 1.0 50.0 1.4                         @group Fractal @if fractal=tglad,simple
+// @param box_dims float3 0 0 0 50 50 50 1.0 50.0 1.4                         @group Fractal @if fractal=tglad,menger,simple
 // @param levels int 1 20 6                                                   @group Fractal
 // @param fractal enum tglad mandelbulb mandelbox menger pkleinian simple     @group Fractal
 // @param power float 2 16 8                                                  @group Fractal @if fractal=mandelbulb
